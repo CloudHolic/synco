@@ -7,6 +7,7 @@ import (
 	"synco/logger"
 	"synco/model"
 	"synco/pipeline"
+	"synco/protocol"
 	"synco/repository"
 	"synco/syncer"
 	"synco/watcher"
@@ -50,7 +51,14 @@ func (m *JobManager) StartJob(job model.Job) error {
 		return fmt.Errorf("failed to watch %s: %w", job.Src, err)
 	}
 
-	s, err := syncer.NewLocalSyncer(job.Src, job.Dst)
+	var s syncer.Syncer
+
+	if protocol.IsRemote(job.Dst) {
+		s, err = syncer.NewRemoteSyncer(job.Src, job.Dst)
+	} else {
+		s, err = syncer.NewLocalSyncer(job.Src, job.Dst)
+	}
+
 	if err != nil {
 		w.Stop()
 		return fmt.Errorf("failed to create syncer: %w", err)
@@ -68,7 +76,7 @@ func (m *JobManager) StartJob(job model.Job) error {
 	return nil
 }
 
-func (m *JobManager) runPipeline(state *JobState, w *watcher.Watcher, s *syncer.LocalSyncer) {
+func (m *JobManager) runPipeline(state *JobState, w *watcher.Watcher, s syncer.Syncer) {
 	defer func() {
 		w.Stop()
 
