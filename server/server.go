@@ -6,7 +6,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"synco/conflict"
 	"synco/logger"
+	"synco/model"
 	"synco/protocol"
 
 	"go.uber.org/zap"
@@ -17,9 +19,10 @@ type TCPServer struct {
 	addr     string
 	listener net.Listener
 	doneCh   chan struct{}
+	resolver *conflict.Resolver
 }
 
-func New(dst, addr string) (*TCPServer, error) {
+func New(dst, addr string, strategy model.ConflictStrategy) (*TCPServer, error) {
 	absDst, err := filepath.Abs(dst)
 	if err != nil {
 		return nil, fmt.Errorf("invalid dst path: %w", err)
@@ -30,9 +33,10 @@ func New(dst, addr string) (*TCPServer, error) {
 	}
 
 	return &TCPServer{
-		dst:    absDst,
-		addr:   addr,
-		doneCh: make(chan struct{}),
+		dst:      absDst,
+		addr:     addr,
+		doneCh:   make(chan struct{}),
+		resolver: conflict.NewResolver(strategy),
 	}, nil
 }
 
@@ -114,6 +118,26 @@ func (s *TCPServer) handleSync(conn net.Conn, msg protocol.Message) {
 		if protocol.ChecksumEqual(existing, msg.Checksum) {
 			_ = protocol.WriteResponse(conn, protocol.Response{Code: protocol.ResponseSkip})
 			return
+		}
+	}
+
+	if dstInfo, err := os.Stat(dstPath); err == nil {
+		if dstInfo.ModTime().After(msg.ModTime) {
+			conflictInfo := &model.ConflictInfo{
+				Path:       msg.Path,
+				SrcModTime: msg.ModTime,
+				DstModTime: dstInfo.ModTime(),
+				Strategy:   s.resolver.Strategy(),
+			}
+
+			proceed, err := s.resolver.Resolve(conflictInfo, "", dstPath)
+			if err != nil || !proceed {
+				_ = protocol.WriteResponse(conn, protocol.Response{
+					Code: protocol.ResponseSkip,
+					Msg:  "conflict: dst is newer",
+				})
+				return
+			}
 		}
 	}
 

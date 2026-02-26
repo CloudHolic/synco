@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 )
 
 type MessageType byte
@@ -27,6 +28,7 @@ const (
 type Message struct {
 	Type     MessageType
 	Path     string
+	ModTime  time.Time
 	Checksum []byte
 	Data     []byte
 }
@@ -51,6 +53,10 @@ func WriteMessage(w io.Writer, msg Message) error {
 	}
 
 	if msg.Type == MessageSync {
+		if err := binary.Write(w, binary.BigEndian, msg.ModTime.UnixNano()); err != nil {
+			return err
+		}
+
 		if _, err := w.Write(msg.Checksum); err != nil {
 			return err
 		}
@@ -87,6 +93,12 @@ func ReadMessage(r io.Reader) (Message, error) {
 	msg.Path = string(pathBuf)
 
 	if msg.Type == MessageSync {
+		var modTimeNano int64
+		if err := binary.Read(r, binary.BigEndian, &modTimeNano); err != nil {
+			return msg, err
+		}
+		msg.ModTime = time.Unix(0, modTimeNano)
+
 		msg.Checksum = make([]byte, 32)
 		if _, err := io.ReadFull(r, msg.Checksum); err != nil {
 			return msg, err

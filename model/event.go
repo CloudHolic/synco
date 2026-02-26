@@ -18,8 +18,9 @@ type FileEvent struct {
 }
 
 type SyncResult struct {
-	Event   FileEvent
-	SrcPath string
-	DstPath string
-	Err     error
+	Event    FileEvent
+	SrcPath  string
+	DstPath  string
+	Err      error
+	Conflict *ConflictInfo
 }

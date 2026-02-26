@@ -85,6 +85,11 @@ func (s *RemoteSyncer) handle(event model.FileEvent) model.SyncResult {
 }
 
 func (s *RemoteSyncer) sendFile(conn net.Conn, reader *bufio.Reader, path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("failed to stat file: %w", err)
+	}
+
 	checksum, err := protocol.FileChecksum(path)
 	if err != nil {
 		return fmt.Errorf("failed to compute checksum: %w", err)
@@ -103,6 +108,7 @@ func (s *RemoteSyncer) sendFile(conn net.Conn, reader *bufio.Reader, path string
 	msg := protocol.Message{
 		Type:     protocol.MessageSync,
 		Path:     filepath.ToSlash(relPath),
+		ModTime:  info.ModTime(),
 		Checksum: checksum,
 		Data:     data,
 	}

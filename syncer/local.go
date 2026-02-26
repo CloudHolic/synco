@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"synco/conflict"
 	"synco/logger"
 	"synco/model"
 
@@ -13,11 +14,12 @@ import (
 )
 
 type LocalSyncer struct {
-	src string
-	dst string
+	src      string
+	dst      string
+	resolver *conflict.Resolver
 }
 
-func NewLocalSyncer(src, dst string) (*LocalSyncer, error) {
+func NewLocalSyncer(src, dst string, strategy model.ConflictStrategy) (*LocalSyncer, error) {
 	absSrc, err := filepath.Abs(src)
 	if err != nil {
 		return nil, fmt.Errorf("invalid src path: %w", err)
@@ -31,7 +33,11 @@ func NewLocalSyncer(src, dst string) (*LocalSyncer, error) {
 		return nil, fmt.Errorf("failed to create dst dir: %w", err)
 	}
 
-	return &LocalSyncer{src: absSrc, dst: absDst}, nil
+	return &LocalSyncer{
+		src:      absSrc,
+		dst:      absDst,
+		resolver: conflict.NewResolver(strategy),
+	}, nil
 }
 
 func (s *LocalSyncer) Run(inCh <-chan model.FileEvent) <-chan model.SyncResult {
@@ -98,6 +104,25 @@ func (s *LocalSyncer) handle(event model.FileEvent) model.SyncResult {
 
 	switch event.Type {
 	case model.EventCreate, model.EventWrite:
+		conflictInfo, err := s.resolver.DetectConflict(event.Path, dstPath)
+		if err != nil {
+			result.Err = err
+			return result
+		}
+
+		if conflictInfo != nil {
+			proceed, err := s.resolver.Resolve(conflictInfo, event.Path, dstPath)
+			if err != nil {
+				result.Err = err
+				return result
+			}
+
+			if !proceed {
+				result.Conflict = conflictInfo
+				return result
+			}
+		}
+
 		result.Err = s.copyFile(event.Path, dstPath)
 
 	case model.EventRemove:

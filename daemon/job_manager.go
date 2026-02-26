@@ -56,7 +56,7 @@ func (m *JobManager) StartJob(job model.Job) error {
 	if protocol.IsRemote(job.Dst) {
 		s, err = syncer.NewRemoteSyncer(job.Src, job.Dst)
 	} else {
-		s, err = syncer.NewLocalSyncer(job.Src, job.Dst)
+		s, err = syncer.NewLocalSyncer(job.Src, job.Dst, m.cfg.ConflictStrategy)
 	}
 
 	if err != nil {

@@ -5,24 +5,27 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"synco/model"
 
 	"github.com/spf13/viper"
 )
 
 type Config struct {
-	Port       int      `mapstructure:"port"`
-	DaemonPort int      `mapstructure:"daemon_port"`
-	BufferSize int      `mapstructure:"buffer_size"`
-	IgnoreList []string `mapstructure:"ignore_list"`
-	DBPath     string   `mapstructure:"db_path"`
+	Port             int                    `mapstructure:"port"`
+	DaemonPort       int                    `mapstructure:"daemon_port"`
+	BufferSize       int                    `mapstructure:"buffer_size"`
+	IgnoreList       []string               `mapstructure:"ignore_list"`
+	DBPath           string                 `mapstructure:"db_path"`
+	ConflictStrategy model.ConflictStrategy `mapstructure:"conflict_strategy"`
 }
 
 var Default = Config{
-	Port:       9000,
-	DaemonPort: 9001,
-	BufferSize: 100,
-	IgnoreList: []string{".git", ".DS_Store", "*.tmp", "*.swp"},
-	DBPath:     "synco.db",
+	Port:             9000,
+	DaemonPort:       9001,
+	BufferSize:       100,
+	IgnoreList:       []string{".git", ".DS_Store", "*.tmp", "*.swp"},
+	DBPath:           "synco.db",
+	ConflictStrategy: model.StrategyNewerWins,
 }
 
 func Load() (*Config, error) {
@@ -45,6 +48,7 @@ func Load() (*Config, error) {
 	viper.SetDefault("buffer_size", Default.BufferSize)
 	viper.SetDefault("ignore_list", Default.IgnoreList)
 	viper.SetDefault("db_path", Default.DBPath)
+	viper.SetDefault("conflict_strategy", Default.ConflictStrategy)
 
 	viper.SetEnvPrefix("SYNCO")
 	viper.AutomaticEnv()

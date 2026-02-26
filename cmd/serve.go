@@ -27,7 +27,7 @@ var serveCmd = &cobra.Command{
 			return fmt.Errorf("--target is required")
 		}
 
-		srv, err := server.New(serveTarget, serveAddr)
+		srv, err := server.New(serveTarget, serveAddr, cfg.ConflictStrategy)
 		if err != nil {
 			return err
 		}
