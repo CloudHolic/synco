@@ -11,11 +11,15 @@ func NewJobRepository() *JobRepository {
 	return &JobRepository{}
 }
 
-func (r *JobRepository) Add(src, dst string) (model.Job, error) {
+func (r *JobRepository) Add(
+	srcPath string, srcType model.EndpointType,
+	dstPath string, dstType model.EndpointType) (model.Job, error) {
 	job := model.Job{
-		Src:    src,
-		Dst:    dst,
-		Status: model.JobStatusActive,
+		SrcType: srcType,
+		SrcPath: srcPath,
+		DstType: dstType,
+		DstPath: dstPath,
+		Status:  model.JobStatusActive,
 	}
 
 	return job, db.DB.Create(&job).Error
@@ -35,6 +39,12 @@ func (r *JobRepository) UpdateStatus(id uint, status model.JobStatus) error {
 	return db.DB.Model(&model.Job{}).
 		Where("id = ?", id).
 		Update("status", status).Error
+}
+
+func (r *JobRepository) UpdateRecvPort(id uint, port int) error {
+	return db.DB.Model(&model.Job{}).
+		Where("id = ?", id).
+		Update("recv_port", port).Error
 }
 
 func (r *JobRepository) Delete(id uint) error {

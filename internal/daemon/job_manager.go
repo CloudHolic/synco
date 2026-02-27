@@ -1,7 +1,12 @@
 package daemon
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"strings"
 	"sync"
 	"synco/internal/config"
 	"synco/internal/logger"
@@ -9,6 +14,7 @@ import (
 	"synco/internal/pipeline"
 	"synco/internal/protocol"
 	"synco/internal/repository"
+	"synco/internal/server"
 	"synco/internal/syncer"
 	"synco/internal/vclock"
 	"synco/internal/watcher"
@@ -48,37 +54,127 @@ func (m *JobManager) StartJob(job model.Job) error {
 	if err != nil {
 		return err
 	}
-	vc := vclock.New()
 
+	if job.SrcType == model.EndpointRemoteTCP {
+		if err := m.startRecvJob(job, state, nodeID); err != nil {
+			return err
+		}
+		m.jobs[job.ID] = state
+		return nil
+	}
+
+	if err := m.startPushJob(job, state, nodeID); err != nil {
+		return err
+	}
+	m.jobs[job.ID] = state
+	return nil
+}
+
+func (m *JobManager) startRecvJob(job model.Job, state *JobState, nodeID string) error {
+	recvPort := job.RecvPort
+	if recvPort == 0 {
+		port, err := findAvailablePort()
+		if err != nil {
+			return fmt.Errorf("failed to find available port: %w", err)
+		}
+		recvPort = port
+
+		if err := m.jobRepo.UpdateRecvPort(job.ID, recvPort); err != nil {
+			return fmt.Errorf("failed to save receive port: %w", err)
+		}
+	}
+
+	srv, err := server.New(job.DstPath, fmt.Sprintf(":%d", recvPort), nodeID, m.cfg.ConflictStrategy)
+	if err != nil {
+		return fmt.Errorf("failed to create receive server: %w", err)
+	}
+	if err := srv.Start(); err != nil {
+		return fmt.Errorf("failed to start receive server: %w", err)
+	}
+
+	state.RecvServer = srv
+
+	myIP, err := getOutboundIP()
+	if err != nil {
+		return fmt.Errorf("failed to determine local IP: %w", err)
+	}
+	pushTo := fmt.Sprintf("%s:%d", myIP, recvPort)
+
+	if err := m.requestDelegation(job, nodeID, pushTo); err != nil {
+		srv.Stop()
+		return fmt.Errorf("delegation failed: %w", err)
+	}
+
+	logger.Log.Info("receive job started",
+		zap.Uint("id", job.ID),
+		zap.String("src", job.SrcPath),
+		zap.String("dst", job.DstPath),
+		zap.Int("receive_port", recvPort),
+		zap.String("push_to", pushTo))
+
+	return nil
+}
+
+func (m *JobManager) startPushJob(job model.Job, state *JobState, nodeID string) error {
 	w, err := watcher.New(m.cfg.BufferSize)
 	if err != nil {
-		return fmt.Errorf("failed to create watcher: %w", err)
+		return err
 	}
-	if err := w.Watch(job.Src); err != nil {
-		return fmt.Errorf("failed to watch %s: %w", job.Src, err)
+	if err := w.Watch(job.SrcPath); err != nil {
+		return err
 	}
 
+	vc := vclock.New()
 	var s syncer.Syncer
-
-	if protocol.IsRemote(job.Dst) {
-		s, err = syncer.NewRemoteSyncer(job.Src, job.Dst, nodeID, vc)
-	} else {
-		s, err = syncer.NewLocalSyncer(job.Src, job.Dst, m.cfg.ConflictStrategy)
+	switch job.DstType {
+	case model.EndpointRemoteTCP:
+		s, err = syncer.NewRemoteSyncer(job.SrcPath, job.DstPath, nodeID, vc)
+	default:
+		s, err = syncer.NewLocalSyncer(job.SrcPath, job.DstPath, m.cfg.ConflictStrategy)
 	}
 
 	if err != nil {
 		w.Stop()
-		return fmt.Errorf("failed to create syncer: %w", err)
+		return err
 	}
-
-	m.jobs[job.ID] = state
 
 	go m.runPipeline(state, w, s)
 
-	logger.Log.Info("job started",
+	logger.Log.Info("push job started",
 		zap.Uint("id", job.ID),
-		zap.String("src", job.Src),
-		zap.String("dst", job.Dst))
+		zap.String("src", job.SrcPath),
+		zap.String("dst", job.DstPath))
+
+	return nil
+}
+
+func (m *JobManager) requestDelegation(job model.Job, nodeID, pushTo string) error {
+	ep := protocol.ParseEndpoint(job.SrcPath)
+	if !ep.IsRemote() {
+		return fmt.Errorf("src is not a remote endpoint")
+	}
+
+	body := fmt.Sprintf(`{"src":"%s","push_to":"%s","node_id":"%s"}`, ep.Path, pushTo, nodeID)
+	url := fmt.Sprintf("http://%s/jobs/delegate", ep.Host)
+	resp, err := http.Post(url, "application/json", strings.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to reach remote daemon at %s: %w", ep.Host, err)
+	}
+
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(resp.Body)
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		var result map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&result)
+		return fmt.Errorf("remote delegation rejected delegation: %s", result["error"])
+	}
+
+	logger.Log.Info("delegation accepted",
+		zap.String("remote", ep.Host),
+		zap.String("src", ep.Path),
+		zap.String("push_to", job.DstPath))
 
 	return nil
 }
@@ -146,6 +242,10 @@ func (m *JobManager) StopJob(id uint) error {
 		return fmt.Errorf("job %d not found", id)
 	}
 
+	if state.RecvServer != nil {
+		state.RecvServer.Stop()
+	}
+
 	state.StopCh <- struct{}{}
 	return nil
 }
@@ -199,4 +299,29 @@ func (m *JobManager) Snapshots() []JobSnapshot {
 	}
 
 	return snaps
+}
+
+func findAvailablePort() (int, error) {
+	ln, err := net.Listen("tcp", ":0")
+	if err != nil {
+		return 0, err
+	}
+
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+
+	return port, nil
+}
+
+func getOutboundIP() (string, error) {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		return "", err
+	}
+
+	defer func(conn net.Conn) {
+		_ = conn.Close()
+	}(conn)
+
+	return conn.LocalAddr().(*net.UDPAddr).IP.String(), nil
 }

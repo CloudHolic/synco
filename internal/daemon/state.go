@@ -3,29 +3,31 @@ package daemon
 import (
 	"sync"
 	"synco/internal/model"
+	"synco/internal/server"
 	"time"
 )
 
 type JobState struct {
-	mu        sync.RWMutex
-	JobID     uint
-	Src       string
-	Dst       string
-	Status    model.JobStatus
-	StartedAt time.Time
-	Synced    int
-	Failed    int
-	LastSync  *time.Time
-	PauseCh   chan struct{}
-	ResumeCh  chan struct{}
-	StopCh    chan struct{}
+	mu         sync.RWMutex
+	JobID      uint
+	Src        string
+	Dst        string
+	Status     model.JobStatus
+	StartedAt  time.Time
+	Synced     int
+	Failed     int
+	LastSync   *time.Time
+	PauseCh    chan struct{}
+	ResumeCh   chan struct{}
+	StopCh     chan struct{}
+	RecvServer *server.TCPServer
 }
 
 func NewJobState(job model.Job) *JobState {
 	return &JobState{
 		JobID:     job.ID,
-		Src:       job.Src,
-		Dst:       job.Dst,
+		Src:       job.SrcPath,
+		Dst:       job.DstPath,
 		Status:    model.JobStatusActive,
 		StartedAt: time.Now(),
 		PauseCh:   make(chan struct{}, 1),

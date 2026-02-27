@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"synco/internal/logger"
+	"synco/internal/model"
 	"synco/internal/repository"
 
 	"github.com/labstack/echo/v4"
@@ -48,6 +49,7 @@ func (s *Server) registerRoutes() {
 	g := s.echo.Group("/jobs")
 	g.GET("", s.handleListJobs)
 	g.POST("", s.handleAddJob)
+	g.POST("/delegate", s.handleDelegate)
 	g.DELETE("/:id", s.handleRemoveJob)
 	g.POST("/:id/pause", s.handlePauseJob)
 	g.POST("/:id/resume", s.handleResumeJob)
@@ -106,8 +108,10 @@ func (s *Server) handleListJobs(c echo.Context) error {
 }
 
 type addJobRequest struct {
-	Src string `json:"src"`
-	Dst string `json:"dst"`
+	Src     string             `json:"src"`
+	SrcType model.EndpointType `json:"src_type"`
+	Dst     string             `json:"dst"`
+	DstType model.EndpointType `json:"dst_type"`
 }
 
 func (s *Server) handleAddJob(c echo.Context) error {
@@ -116,7 +120,7 @@ func (s *Server) handleAddJob(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "src and dst required"})
 	}
 
-	job, err := s.jobRepo.Add(req.Src, req.Dst)
+	job, err := s.jobRepo.Add(req.Src, req.SrcType, req.Dst, req.DstType)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
@@ -124,6 +128,46 @@ func (s *Server) handleAddJob(c echo.Context) error {
 	if err := s.manager.StartJob(job); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
+
+	return c.JSON(http.StatusCreated, job)
+}
+
+type delegateRequest struct {
+	Src    string `json:"src"`
+	PushTo string `json:"push_to"`
+	NodeID string `json:"node_id"`
+}
+
+func (s *Server) handleDelegate(c echo.Context) error {
+	var req delegateRequest
+	if err := c.Bind(&req); err != nil || req.Src == "" || req.PushTo == "" || req.NodeID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "src and push_to required"})
+	}
+
+	jobs, err := s.jobRepo.GetAll()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	for _, j := range jobs {
+		if j.SrcPath == req.Src && j.DstPath == req.PushTo {
+			return c.JSON(http.StatusOK, map[string]string{"status": "already exists"})
+		}
+	}
+
+	job, err := s.jobRepo.Add(req.Src, model.EndpointLocal, req.PushTo, model.EndpointRemoteTCP)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	if err := s.manager.StartJob(job); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	logger.Log.Info("delegated job started",
+		zap.String("src", req.Src),
+		zap.String("push_to", req.PushTo),
+		zap.String("requested_by", req.NodeID))
 
 	return c.JSON(http.StatusCreated, job)
 }

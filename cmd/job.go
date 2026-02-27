@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"synco/internal/model"
+	"synco/internal/protocol"
 
 	"github.com/spf13/cobra"
 )
@@ -67,12 +69,25 @@ var jobAddCmd = &cobra.Command{
 	Short: "Add a new job",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		body := fmt.Sprintf(`{"src":"%s", "dst":"%s"}`, args[0], args[1])
-		resp, err := http.Post(
-			daemonURL("/jobs"),
-			"application/json",
-			strings.NewReader(body))
+		srcRaw, dstRaw := args[0], args[1]
 
+		srcEp := protocol.ParseEndpoint(srcRaw)
+		dstEp := protocol.ParseEndpoint(dstRaw)
+
+		srcType := model.EndpointLocal
+		if srcEp.IsRemote() {
+			srcType = model.EndpointRemoteTCP
+		}
+
+		dstType := model.EndpointLocal
+		if dstEp.IsRemote() {
+			dstType = model.EndpointRemoteTCP
+		}
+
+		body := fmt.Sprintf(`{"src":"%s","src_type":"%s","dst":"%s","dst_type":"%s"}`,
+			srcRaw, srcType, dstRaw, dstType)
+		resp, err := http.Post(daemonURL("/jobs"), "application/json", strings.NewReader(body))
+		
 		if err != nil {
 			return fmt.Errorf("daemon not running: %w", err)
 		}
@@ -83,7 +98,7 @@ var jobAddCmd = &cobra.Command{
 
 		var result map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&result)
-		fmt.Printf("job addedd: id=%v src=%s dst=%s\n", result["id"], args[0], args[1])
+		fmt.Printf("job added: id=%v  %s → %s\n", result["id"], srcRaw, dstRaw)
 		return nil
 	},
 }

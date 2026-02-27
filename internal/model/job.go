@@ -2,6 +2,15 @@ package model
 
 import "gorm.io/gorm"
 
+type EndpointType string
+
+const (
+	EndpointLocal     EndpointType = "LOCAL"
+	EndpointRemoteTCP EndpointType = "REMOTE_TCP"
+	EndpointGDrive    EndpointType = "GOOGLE_DRIVE"
+	EndpointDropbox   EndpointType = "DROPBOX"
+)
+
 type JobStatus string
 
 const (
@@ -12,7 +21,10 @@ const (
 
 type Job struct {
 	gorm.Model
-	Src    string    `gorm:"not null"`
-	Dst    string    `gorm:"not null"`
-	Status JobStatus `gorm:"not null;default:'ACTIVE'"`
+	SrcType  EndpointType `gorm:"not null"`
+	SrcPath  string       `gorm:"not null"`
+	DstType  EndpointType `gorm:"not null"`
+	DstPath  string       `gorm:"not null"`
+	Status   JobStatus    `gorm:"not null;default:'ACTIVE'"`
+	RecvPort int
 }
