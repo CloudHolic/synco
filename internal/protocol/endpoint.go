@@ -20,7 +20,7 @@ func ParseEndpoint(raw string) Endpoint {
 	}
 
 	// Colon이 Slash보다 앞이어도 로컬 경로 (ex. /home/...)
-	if slashIdx == -1 && slashIdx < colonIdx {
+	if slashIdx != -1 && slashIdx < colonIdx {
 		return Endpoint{Path: raw}
 	}
 

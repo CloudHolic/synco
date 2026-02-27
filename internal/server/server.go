@@ -122,7 +122,7 @@ func (s *TCPServer) handleConn(conn net.Conn) {
 func (s *TCPServer) handleSync(conn net.Conn, msg protocol.Message) {
 	dstPath := filepath.Join(s.dst, filepath.FromSlash(msg.Path))
 
-	if existing, err := protocol.FileChecksum(dstPath); err != nil {
+	if existing, err := protocol.FileChecksum(dstPath); err == nil {
 		if protocol.ChecksumEqual(existing, msg.Checksum) {
 			_ = protocol.WriteResponse(conn, protocol.Response{Code: protocol.ResponseSkip})
 			return

@@ -86,7 +86,7 @@ func Compare(a, b map[string]uint64) Relation {
 	case bBeforeA && !aBeforeB:
 		return After
 	case aBeforeB && bBeforeA:
-		return After
+		return Before
 	default:
 		return Concurrent
 	}

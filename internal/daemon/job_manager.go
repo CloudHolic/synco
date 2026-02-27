@@ -174,7 +174,7 @@ func (m *JobManager) requestDelegation(job model.Job, nodeID, pushTo string) err
 	logger.Log.Info("delegation accepted",
 		zap.String("remote", ep.Host),
 		zap.String("src", ep.Path),
-		zap.String("push_to", job.DstPath))
+		zap.String("push_to", pushTo))
 
 	return nil
 }
