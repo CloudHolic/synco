@@ -27,6 +27,8 @@ const (
 
 type Message struct {
 	Type     MessageType
+	OriginID string
+	VClock   map[string]uint64
 	Path     string
 	ModTime  time.Time
 	Checksum []byte
@@ -34,8 +36,9 @@ type Message struct {
 }
 
 type Response struct {
-	Code ResponseCode
-	Msg  string
+	Code   ResponseCode
+	Msg    string
+	VClock map[string]uint64
 }
 
 func WriteMessage(w io.Writer, msg Message) error {
@@ -43,12 +46,24 @@ func WriteMessage(w io.Writer, msg Message) error {
 		return err
 	}
 
-	pathBytes := []byte(msg.Path)
-	if err := binary.Write(w, binary.BigEndian, uint32(len(pathBytes))); err != nil {
+	if err := writeString(w, msg.OriginID); err != nil {
 		return err
 	}
 
-	if _, err := w.Write(pathBytes); err != nil {
+	if err := binary.Write(w, binary.BigEndian, uint32(len(msg.VClock))); err != nil {
+		return err
+	}
+	for k, v := range msg.VClock {
+		if err := writeString(w, k); err != nil {
+			return err
+		}
+
+		if err := binary.Write(w, binary.BigEndian, v); err != nil {
+			return err
+		}
+	}
+
+	if err := writeString(w, msg.Path); err != nil {
 		return err
 	}
 
@@ -64,7 +79,6 @@ func WriteMessage(w io.Writer, msg Message) error {
 		if err := binary.Write(w, binary.BigEndian, uint64(len(msg.Data))); err != nil {
 			return err
 		}
-
 		if _, err := w.Write(msg.Data); err != nil {
 			return err
 		}
@@ -82,15 +96,35 @@ func ReadMessage(r io.Reader) (Message, error) {
 	}
 	msg.Type = MessageType(typeBuf[0])
 
-	var pathLen uint32
-	if err := binary.Read(r, binary.BigEndian, &pathLen); err != nil {
+	originID, err := readString(r)
+	if err != nil {
 		return msg, err
 	}
-	pathBuf := make([]byte, pathLen)
-	if _, err := io.ReadFull(r, pathBuf); err != nil {
+	msg.OriginID = originID
+
+	var clockLen uint32
+	if err := binary.Read(r, binary.BigEndian, &clockLen); err != nil {
 		return msg, err
 	}
-	msg.Path = string(pathBuf)
+	msg.VClock = make(map[string]uint64, clockLen)
+	for range clockLen {
+		k, err := readString(r)
+		if err != nil {
+			return msg, err
+		}
+
+		var v uint64
+		if err := binary.Read(r, binary.BigEndian, &v); err != nil {
+			return msg, err
+		}
+
+		msg.VClock[k] = v
+	}
+
+	msg.Path, err = readString(r)
+	if err != nil {
+		return msg, err
+	}
 
 	if msg.Type == MessageSync {
 		var modTimeNano int64
@@ -108,7 +142,6 @@ func ReadMessage(r io.Reader) (Message, error) {
 		if err := binary.Read(r, binary.BigEndian, &dataLen); err != nil {
 			return msg, err
 		}
-
 		msg.Data = make([]byte, dataLen)
 		if _, err := io.ReadFull(r, msg.Data); err != nil {
 			return msg, err
@@ -123,14 +156,21 @@ func WriteResponse(w io.Writer, resp Response) error {
 		return err
 	}
 
-	msgBytes := []byte(resp.Msg)
-	if err := binary.Write(w, binary.BigEndian, uint32(len(msgBytes))); err != nil {
+	if err := writeString(w, resp.Msg); err != nil {
 		return err
 	}
 
-	if len(msgBytes) > 0 {
-		_, err := w.Write(msgBytes)
+	if err := binary.Write(w, binary.BigEndian, uint32(len(resp.VClock))); err != nil {
 		return err
+	}
+	for k, v := range resp.VClock {
+		if err := writeString(w, k); err != nil {
+			return err
+		}
+
+		if err := binary.Write(w, binary.BigEndian, v); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -145,21 +185,56 @@ func ReadResponse(r io.Reader) (Response, error) {
 	}
 	resp.Code = ResponseCode(codeBuf[0])
 
-	var msgLen uint32
-	if err := binary.Read(r, binary.BigEndian, &msgLen); err != nil {
+	msg, err := readString(r)
+	if err != nil {
 		return resp, err
 	}
+	resp.Msg = msg
 
-	if msgLen > 0 {
-		msgBuf := make([]byte, msgLen)
-		if _, err := io.ReadFull(r, msgBuf); err != nil {
+	var clockLen uint32
+	if err := binary.Read(r, binary.BigEndian, &clockLen); err != nil {
+		return resp, err
+	}
+	resp.VClock = make(map[string]uint64, clockLen)
+	for range clockLen {
+		k, err := readString(r)
+		if err != nil {
 			return resp, err
 		}
 
-		resp.Msg = string(msgBuf)
+		var v uint64
+		if err := binary.Read(r, binary.BigEndian, &v); err != nil {
+			return resp, err
+		}
+
+		resp.VClock[k] = v
 	}
 
 	return resp, nil
+}
+
+func writeString(w io.Writer, s string) error {
+	b := []byte(s)
+	if err := binary.Write(w, binary.BigEndian, uint32(len(b))); err != nil {
+		return err
+	}
+
+	_, err := w.Write(b)
+	return err
+}
+
+func readString(r io.Reader) (string, error) {
+	var length uint32
+	if err := binary.Read(r, binary.BigEndian, &length); err != nil {
+		return "", err
+	}
+
+	b := make([]byte, length)
+	if _, err := io.ReadFull(r, b); err != nil {
+		return "", err
+	}
+
+	return string(b), nil
 }
 
 func FileChecksum(path string) ([]byte, error) {

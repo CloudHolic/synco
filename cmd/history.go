@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"synco/model"
+	"synco/internal/model"
 
 	"github.com/spf13/cobra"
 )

@@ -3,14 +3,15 @@ package daemon
 import (
 	"fmt"
 	"sync"
-	"synco/config"
-	"synco/logger"
-	"synco/model"
-	"synco/pipeline"
-	"synco/protocol"
-	"synco/repository"
-	"synco/syncer"
-	"synco/watcher"
+	"synco/internal/config"
+	"synco/internal/logger"
+	"synco/internal/model"
+	"synco/internal/pipeline"
+	"synco/internal/protocol"
+	"synco/internal/repository"
+	"synco/internal/syncer"
+	"synco/internal/vclock"
+	"synco/internal/watcher"
 	"time"
 
 	"go.uber.org/zap"
@@ -43,6 +44,12 @@ func (m *JobManager) StartJob(job model.Job) error {
 
 	state := NewJobState(job)
 
+	nodeID, err := model.LoadOrCreateNodeID()
+	if err != nil {
+		return err
+	}
+	vc := vclock.New()
+
 	w, err := watcher.New(m.cfg.BufferSize)
 	if err != nil {
 		return fmt.Errorf("failed to create watcher: %w", err)
@@ -54,7 +61,7 @@ func (m *JobManager) StartJob(job model.Job) error {
 	var s syncer.Syncer
 
 	if protocol.IsRemote(job.Dst) {
-		s, err = syncer.NewRemoteSyncer(job.Src, job.Dst)
+		s, err = syncer.NewRemoteSyncer(job.Src, job.Dst, nodeID, vc)
 	} else {
 		s, err = syncer.NewLocalSyncer(job.Src, job.Dst, m.cfg.ConflictStrategy)
 	}

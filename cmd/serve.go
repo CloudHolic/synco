@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"synco/logger"
-	"synco/server"
+	"synco/internal/logger"
+	"synco/internal/model"
+	"synco/internal/server"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -27,7 +28,12 @@ var serveCmd = &cobra.Command{
 			return fmt.Errorf("--target is required")
 		}
 
-		srv, err := server.New(serveTarget, serveAddr, cfg.ConflictStrategy)
+		nodeID, err := model.LoadOrCreateNodeID()
+		if err != nil {
+			return err
+		}
+
+		srv, err := server.New(serveTarget, serveAddr, nodeID, cfg.ConflictStrategy)
 		if err != nil {
 			return err
 		}

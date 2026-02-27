@@ -7,26 +7,34 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"synco/logger"
-	"synco/model"
-	"synco/protocol"
+	"synco/internal/logger"
+	"synco/internal/model"
+	"synco/internal/protocol"
+	"synco/internal/vclock"
 	"time"
 
 	"go.uber.org/zap"
 )
 
 type RemoteSyncer struct {
-	src  string
-	addr string
+	src    string
+	addr   string
+	nodeID string
+	vc     *vclock.Vclock
 }
 
-func NewRemoteSyncer(src, addr string) (*RemoteSyncer, error) {
+func NewRemoteSyncer(src, addr, nodeID string, vc *vclock.Vclock) (*RemoteSyncer, error) {
 	absSrc, err := filepath.Abs(src)
 	if err != nil {
 		return nil, fmt.Errorf("invalid src path: %w", err)
 	}
 
-	return &RemoteSyncer{src: absSrc, addr: addr}, nil
+	return &RemoteSyncer{
+		src:    absSrc,
+		addr:   addr,
+		nodeID: nodeID,
+		vc:     vc,
+	}, nil
 }
 
 func (s *RemoteSyncer) Run(inCh <-chan model.FileEvent) <-chan model.SyncResult {
@@ -105,8 +113,12 @@ func (s *RemoteSyncer) sendFile(conn net.Conn, reader *bufio.Reader, path string
 		relPath = filepath.Base(path)
 	}
 
+	s.vc.Tick(s.nodeID)
+
 	msg := protocol.Message{
 		Type:     protocol.MessageSync,
+		OriginID: s.nodeID,
+		VClock:   s.vc.Snapshot(),
 		Path:     filepath.ToSlash(relPath),
 		ModTime:  info.ModTime(),
 		Checksum: checksum,
@@ -120,6 +132,10 @@ func (s *RemoteSyncer) sendFile(conn net.Conn, reader *bufio.Reader, path string
 	resp, err := protocol.ReadResponse(reader)
 	if err != nil {
 		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.Code == protocol.ResponseOK {
+		s.vc.Merge(resp.VClock)
 	}
 
 	switch resp.Code {

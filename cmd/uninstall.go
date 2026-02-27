@@ -2,7 +2,7 @@ package cmd
 
 import (
 	"fmt"
-	"synco/autostart"
+	"synco/internal/autostart"
 
 	"github.com/spf13/cobra"
 )

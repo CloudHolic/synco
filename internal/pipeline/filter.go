@@ -3,7 +3,7 @@ package pipeline
 import (
 	"path/filepath"
 	"strings"
-	"synco/model"
+	"synco/internal/model"
 )
 
 func Filter(inCh <-chan model.FileEvent, ignoreList []string) <-chan model.FileEvent {

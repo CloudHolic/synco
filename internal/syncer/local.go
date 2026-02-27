@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"synco/conflict"
-	"synco/logger"
-	"synco/model"
+	"synco/internal/conflict"
+	"synco/internal/logger"
+	"synco/internal/model"
 
 	"go.uber.org/zap"
 )

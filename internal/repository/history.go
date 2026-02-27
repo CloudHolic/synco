@@ -1,8 +1,8 @@
 package repository
 
 import (
-	"synco/db"
-	"synco/model"
+	"synco/internal/db"
+	"synco/internal/model"
 	"time"
 )
 

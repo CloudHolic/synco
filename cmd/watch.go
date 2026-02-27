@@ -4,9 +4,9 @@ import (
 	"context"
 	"os"
 	"os/signal"
-	"synco/daemon"
-	"synco/logger"
-	"synco/repository"
+	"synco/internal/daemon"
+	"synco/internal/logger"
+	"synco/internal/repository"
 	"syscall"
 	"time"
 

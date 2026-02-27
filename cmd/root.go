@@ -3,9 +3,9 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"synco/config"
-	"synco/db"
-	"synco/logger"
+	"synco/internal/config"
+	"synco/internal/db"
+	"synco/internal/logger"
 
 	"github.com/spf13/cobra"
 )

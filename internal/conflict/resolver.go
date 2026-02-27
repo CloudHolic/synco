@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"synco/logger"
-	"synco/model"
+	"synco/internal/logger"
+	"synco/internal/model"
 	"time"
 
 	"go.uber.org/zap"

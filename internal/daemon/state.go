@@ -2,7 +2,7 @@ package daemon
 
 import (
 	"sync"
-	"synco/model"
+	"synco/internal/model"
 	"time"
 )
 

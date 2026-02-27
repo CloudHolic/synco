@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"synco/model"
+	"synco/internal/model"
 
 	"github.com/spf13/viper"
 )

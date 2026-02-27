@@ -5,8 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"synco/logger"
-	"synco/repository"
+	"synco/internal/logger"
+	"synco/internal/repository"
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"

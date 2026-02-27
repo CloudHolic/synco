@@ -2,7 +2,7 @@ package db
 
 import (
 	"fmt"
-	"synco/model"
+	"synco/internal/model"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"

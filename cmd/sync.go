@@ -2,9 +2,9 @@ package cmd
 
 import (
 	"fmt"
-	"synco/logger"
-	"synco/repository"
-	"synco/syncer"
+	"synco/internal/logger"
+	"synco/internal/repository"
+	"synco/internal/syncer"
 
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -18,7 +18,7 @@ var syncCmd = &cobra.Command{
 		defer logger.Sync()
 		src, dst := args[0], args[1]
 
-		s, err := syncer.NewLocalSyncer(src, dst)
+		s, err := syncer.NewLocalSyncer(src, dst, cfg.ConflictStrategy)
 		if err != nil {
 			return err
 		}

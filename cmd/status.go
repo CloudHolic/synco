@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"synco/daemon"
+	"synco/internal/daemon"
 	"time"
 
 	"github.com/spf13/cobra"

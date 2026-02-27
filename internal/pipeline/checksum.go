@@ -5,8 +5,8 @@ import (
 	"io"
 	"os"
 	"sync"
-	"synco/logger"
-	"synco/model"
+	"synco/internal/logger"
+	"synco/internal/model"
 
 	"go.uber.org/zap"
 )

@@ -1,7 +1,7 @@
 package pipeline
 
 import (
-	"synco/model"
+	"synco/internal/model"
 	"time"
 )
 
