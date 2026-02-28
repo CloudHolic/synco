@@ -16,6 +16,7 @@ import (
 	"synco/internal/repository"
 	"synco/internal/server"
 	"synco/internal/syncer"
+	"synco/internal/syncer/dropbox"
 	"synco/internal/syncer/gdrive"
 	"synco/internal/vclock"
 	"synco/internal/watcher"
@@ -62,6 +63,10 @@ func (m *JobManager) StartJob(job model.Job) error {
 		}
 	case model.EndpointGDrive:
 		if err := m.startGDrivePullJob(job, state); err != nil {
+			return err
+		}
+	case model.EndpointDropbox:
+		if err := m.startDropboxPullJob(job, state); err != nil {
 			return err
 		}
 	default:
@@ -127,7 +132,7 @@ func (m *JobManager) startGDrivePullJob(job model.Job, state *JobState) error {
 		return fmt.Errorf("failed to create gdrive poller: %w", err)
 	}
 
-	s, err := gdrive.NewGDriveDownloadSyncer(job.ID, folderPath, job.DstPath)
+	s, err := gdrive.NewGDriveDownloadSyncer(folderPath, job.DstPath)
 	if err != nil {
 		return fmt.Errorf("failed to create gdrive download syncer: %w", err)
 	}
@@ -137,10 +142,37 @@ func (m *JobManager) startGDrivePullJob(job model.Job, state *JobState) error {
 	}
 
 	state.GDrivePoller = poller
-
 	go m.runGDrivePipeline(state, poller, s)
 
 	logger.Log.Info("gdrive pull job started",
+		zap.Uint("id", job.ID),
+		zap.String("src", job.SrcPath),
+		zap.String("dst", job.DstPath))
+
+	return nil
+}
+
+func (m *JobManager) startDropboxPullJob(job model.Job, state *JobState) error {
+	folderPath := strings.TrimPrefix(job.SrcPath, "dropbox:")
+
+	poller, err := dropbox.NewDropboxPoller(job.ID, folderPath)
+	if err != nil {
+		return fmt.Errorf("failed to create dropbox poller: %w", err)
+	}
+
+	s, err := dropbox.NewDropboxDownloadSyncer(folderPath, job.DstPath)
+	if err != nil {
+		return fmt.Errorf("failed to create dropbox download syncer: %w", err)
+	}
+
+	if err := poller.Start(); err != nil {
+		return fmt.Errorf("failed to start dropbox poller: %w", err)
+	}
+
+	state.DropboxPoller = poller
+	go m.runDropboxPipeline(state, poller, s)
+
+	logger.Log.Info("dropbox pull job started",
 		zap.Uint("id", job.ID),
 		zap.String("src", job.SrcPath),
 		zap.String("dst", job.DstPath))
@@ -164,6 +196,8 @@ func (m *JobManager) startPushJob(job model.Job, state *JobState, nodeID string)
 		s, err = syncer.NewRemoteSyncer(job.SrcPath, job.DstPath, nodeID, vc)
 	case model.EndpointGDrive:
 		s, err = gdrive.NewGDriveSyncer(job.SrcPath, job.DstPath)
+	case model.EndpointDropbox:
+		s, err = dropbox.NewDropboxSyncer(job.SrcPath, job.DstPath)
 	default:
 		s, err = syncer.NewLocalSyncer(job.SrcPath, job.DstPath, m.cfg.ConflictStrategy)
 	}
@@ -313,6 +347,51 @@ func (m *JobManager) runGDrivePipeline(state *JobState, poller *gdrive.GDrivePol
 	}
 }
 
+func (m *JobManager) runDropboxPipeline(state *JobState, poller *dropbox.DropboxPoller, s syncer.Syncer) {
+	defer func() {
+		m.mu.Lock()
+		delete(m.jobs, state.JobID)
+		m.mu.Unlock()
+		logger.Log.Info("dropbox job stopped",
+			zap.Uint("id", state.JobID))
+	}()
+
+	eventCh := poller.Events()
+	filteredCh := pipeline.Filter(eventCh, m.cfg.IgnoreList)
+	resultCh := s.Run(filteredCh)
+
+	for {
+		select {
+		case result, ok := <-resultCh:
+			if !ok {
+				return
+			}
+
+			if state.Status == model.JobStatusPaused {
+				continue
+			}
+
+			if err := m.repo.Save(result); err != nil {
+				logger.Log.Warn("failed to save history", zap.Error(err))
+			}
+
+			state.RecordSync(result)
+
+		case <-state.PauseCh:
+			state.SetStatus(model.JobStatusPaused)
+			_ = m.jobRepo.UpdateStatus(state.JobID, model.JobStatusPaused)
+
+		case <-state.ResumeCh:
+			state.SetStatus(model.JobStatusActive)
+			_ = m.jobRepo.UpdateStatus(state.JobID, model.JobStatusActive)
+
+		case <-state.StopCh:
+			poller.Stop()
+			return
+		}
+	}
+}
+
 func (m *JobManager) StopJob(id uint) error {
 	m.mu.RLock()
 	state, exists := m.jobs[id]
@@ -328,6 +407,10 @@ func (m *JobManager) StopJob(id uint) error {
 
 	if state.GDrivePoller != nil {
 		state.GDrivePoller.Stop()
+	}
+
+	if state.DropboxPoller != nil {
+		state.DropboxPoller.Stop()
 	}
 
 	state.StopCh <- struct{}{}

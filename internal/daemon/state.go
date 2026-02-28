@@ -4,25 +4,27 @@ import (
 	"sync"
 	"synco/internal/model"
 	"synco/internal/server"
+	"synco/internal/syncer/dropbox"
 	"synco/internal/syncer/gdrive"
 	"time"
 )
 
 type JobState struct {
-	mu           sync.RWMutex
-	JobID        uint
-	Src          string
-	Dst          string
-	Status       model.JobStatus
-	StartedAt    time.Time
-	Synced       int
-	Failed       int
-	LastSync     *time.Time
-	PauseCh      chan struct{}
-	ResumeCh     chan struct{}
-	StopCh       chan struct{}
-	RecvServer   *server.TCPServer
-	GDrivePoller *gdrive.GDrivePoller
+	mu            sync.RWMutex
+	JobID         uint
+	Src           string
+	Dst           string
+	Status        model.JobStatus
+	StartedAt     time.Time
+	Synced        int
+	Failed        int
+	LastSync      *time.Time
+	PauseCh       chan struct{}
+	ResumeCh      chan struct{}
+	StopCh        chan struct{}
+	RecvServer    *server.TCPServer
+	GDrivePoller  *gdrive.GDrivePoller
+	DropboxPoller *dropbox.DropboxPoller
 }
 
 func NewJobState(job model.Job) *JobState {

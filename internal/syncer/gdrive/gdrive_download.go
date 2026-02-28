@@ -22,7 +22,7 @@ type GDriveDownloadSyncer struct {
 	helper   *GDriveSyncer
 }
 
-func NewGDriveDownloadSyncer(jobID uint, folderPath, dst string) (*GDriveDownloadSyncer, error) {
+func NewGDriveDownloadSyncer(folderPath, dst string) (*GDriveDownloadSyncer, error) {
 	absDst, err := filepath.Abs(dst)
 	if err != nil {
 		return nil, fmt.Errorf("invalid dst path: %w", err)
