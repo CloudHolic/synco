@@ -71,23 +71,13 @@ var jobAddCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		srcRaw, dstRaw := args[0], args[1]
 
-		srcEp := protocol.ParseEndpoint(srcRaw)
-		dstEp := protocol.ParseEndpoint(dstRaw)
-
-		srcType := model.EndpointLocal
-		if srcEp.IsRemote() {
-			srcType = model.EndpointRemoteTCP
-		}
-
-		dstType := model.EndpointLocal
-		if dstEp.IsRemote() {
-			dstType = model.EndpointRemoteTCP
-		}
+		srcType := endpointType(srcRaw)
+		dstType := endpointType(dstRaw)
 
 		body := fmt.Sprintf(`{"src":"%s","src_type":"%s","dst":"%s","dst_type":"%s"}`,
 			srcRaw, srcType, dstRaw, dstType)
 		resp, err := http.Post(daemonURL("/jobs"), "application/json", strings.NewReader(body))
-		
+
 		if err != nil {
 			return fmt.Errorf("daemon not running: %w", err)
 		}
@@ -159,6 +149,19 @@ var jobResumeCmd = &cobra.Command{
 		fmt.Printf("job %s resumed\n", args[0])
 		return nil
 	},
+}
+
+func endpointType(raw string) model.EndpointType {
+	switch {
+	case strings.HasPrefix(raw, "gdrive:"):
+		return model.EndpointGDrive
+	case strings.HasPrefix(raw, "dropbox:"):
+		return model.EndpointDropbox
+	case protocol.ParseEndpoint(raw).IsRemote():
+		return model.EndpointRemoteTCP
+	default:
+		return model.EndpointLocal
+	}
 }
 
 func init() {
