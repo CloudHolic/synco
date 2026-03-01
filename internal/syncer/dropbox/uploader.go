@@ -1,27 +1,26 @@
 package dropbox
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"synco/internal/auth"
 	"synco/internal/logger"
 	"synco/internal/model"
+	"synco/internal/syncer"
 
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox"
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/files"
 	"go.uber.org/zap"
 )
 
-type DropboxSyncer struct {
+type Uploader struct {
 	src        string
 	folderPath string
 	client     files.Client
 }
 
-func NewDropboxSyncer(src, folderPath string) (*DropboxSyncer, error) {
+func NewUploader(src, folderPath string) (*Uploader, error) {
 	absSrc, err := filepath.Abs(src)
 	if err != nil {
 		return nil, fmt.Errorf("invalid src path: %w", err)
@@ -35,8 +34,8 @@ func NewDropboxSyncer(src, folderPath string) (*DropboxSyncer, error) {
 	cfg := dropbox.Config{Token: token.AccessToken}
 	client := files.New(cfg)
 
-	folderPath = normalizeDropboxPath(folderPath)
-	if err := ensureDropboxFolder(client, folderPath); err != nil {
+	folderPath = normalizePath(folderPath)
+	if err := ensureFolder(client, folderPath); err != nil {
 		return nil, fmt.Errorf("failed to prepare dropbox folder: %w", err)
 	}
 
@@ -44,40 +43,18 @@ func NewDropboxSyncer(src, folderPath string) (*DropboxSyncer, error) {
 		zap.String("src", absSrc),
 		zap.String("folder", folderPath))
 
-	return &DropboxSyncer{
+	return &Uploader{
 		src:        absSrc,
 		folderPath: folderPath,
 		client:     client,
 	}, nil
 }
 
-func (s *DropboxSyncer) Run(inCh <-chan model.FileEvent) <-chan model.SyncResult {
-	outCh := make(chan model.SyncResult, cap(inCh))
-
-	go func() {
-		defer close(outCh)
-
-		for event := range inCh {
-			result := s.handle(event)
-
-			if result.Err != nil {
-				logger.Log.Error("dropbox sync failed",
-					zap.String("path", event.Path),
-					zap.Error(result.Err))
-			} else {
-				logger.Log.Info("dropbox synced",
-					zap.String("type", string(event.Type)),
-					zap.String("path", event.Path))
-			}
-
-			outCh <- result
-		}
-	}()
-
-	return outCh
+func (s *Uploader) Run(inCh <-chan model.FileEvent) <-chan model.SyncResult {
+	return syncer.RunLoop(inCh, s.handle)
 }
 
-func (s *DropboxSyncer) handle(event model.FileEvent) model.SyncResult {
+func (s *Uploader) handle(event model.FileEvent) model.SyncResult {
 	result := model.SyncResult{
 		Event:   event,
 		SrcPath: event.Path,
@@ -91,10 +68,20 @@ func (s *DropboxSyncer) handle(event model.FileEvent) model.SyncResult {
 		result.Err = s.deleteFile(event.Path)
 	}
 
+	if result.Err != nil {
+		logger.Log.Error("dropbox sync failed",
+			zap.String("path", event.Path),
+			zap.Error(result.Err))
+	} else {
+		logger.Log.Info("dropbox synced",
+			zap.String("type", string(event.Type)),
+			zap.String("path", event.Path))
+	}
+
 	return result
 }
 
-func (s *DropboxSyncer) uploadFile(localPath string) error {
+func (s *Uploader) uploadFile(localPath string) error {
 	relPath := s.relPath(localPath)
 	dropboxPath := s.folderPath + "/" + relPath
 
@@ -118,13 +105,13 @@ func (s *DropboxSyncer) uploadFile(localPath string) error {
 	return nil
 }
 
-func (s *DropboxSyncer) deleteFile(localPath string) error {
+func (s *Uploader) deleteFile(localPath string) error {
 	relPath := s.relPath(localPath)
 	dropboxPath := s.folderPath + "/" + relPath
 
 	arg := files.NewDeleteArg(dropboxPath)
 	if _, err := s.client.DeleteV2(arg); err != nil {
-		if isDropboxNotFound(err) {
+		if isNotFound(err) {
 			return nil
 		}
 
@@ -134,51 +121,11 @@ func (s *DropboxSyncer) deleteFile(localPath string) error {
 	return nil
 }
 
-func (s *DropboxSyncer) relPath(localPath string) string {
+func (s *Uploader) relPath(localPath string) string {
 	rel, err := filepath.Rel(s.src, localPath)
 	if err != nil {
 		return filepath.Base(localPath)
 	}
 
 	return filepath.ToSlash(rel)
-}
-
-func ensureDropboxFolder(client files.Client, path string) error {
-	arg := files.NewCreateFolderArg(path)
-	arg.Autorename = false
-
-	if _, err := client.CreateFolderV2(arg); err != nil {
-		if isDropboxConflict(err) {
-			return nil
-		}
-
-		return err
-	}
-
-	return nil
-}
-
-func normalizeDropboxPath(p string) string {
-	p = "/" + strings.Trim(filepath.ToSlash(p), "/")
-	return p
-}
-
-func isDropboxNotFound(err error) bool {
-	if apiErr, ok := errors.AsType[files.DeleteV2APIError](err); ok {
-		return apiErr.EndpointError != nil &&
-			apiErr.EndpointError.PathLookup != nil &&
-			apiErr.EndpointError.PathLookup.Tag == "not_found"
-	}
-
-	return false
-}
-
-func isDropboxConflict(err error) bool {
-	if apiErr, ok := errors.AsType[files.CreateFolderV2APIError](err); ok {
-		return apiErr.EndpointError != nil &&
-			apiErr.EndpointError.Path != nil &&
-			apiErr.EndpointError.Path.Tag == "conflict"
-	}
-
-	return false
 }

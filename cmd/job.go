@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"synco/internal/model"
-	"synco/internal/protocol"
+	"synco/internal/syncer/tcp"
 
 	"github.com/spf13/cobra"
 )
@@ -157,7 +157,7 @@ func endpointType(raw string) model.EndpointType {
 		return model.EndpointGDrive
 	case strings.HasPrefix(raw, "dropbox:"):
 		return model.EndpointDropbox
-	case protocol.ParseEndpoint(raw).IsRemote():
+	case tcp.ParseEndpoint(raw).IsRemote():
 		return model.EndpointRemoteTCP
 	default:
 		return model.EndpointLocal

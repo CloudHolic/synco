@@ -1,4 +1,4 @@
-package vclock
+package tcp
 
 import "sync"
 
@@ -7,12 +7,12 @@ type Vclock struct {
 	clock map[string]uint64
 }
 
-func New() *Vclock {
+func NewVclock() *Vclock {
 	return &Vclock{clock: make(map[string]uint64)}
 }
 
 func FromMap(m map[string]uint64) *Vclock {
-	vc := New()
+	vc := NewVclock()
 	for k, v := range m {
 		vc.clock[k] = v
 	}

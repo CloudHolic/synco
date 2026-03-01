@@ -15,10 +15,11 @@ import (
 	"google.golang.org/api/drive/v3"
 )
 
-type GDrivePoller struct {
+type Source struct {
 	folderPath string
 	folderID   string
 	knownDirs  map[string]bool
+	pathByID   map[string]string
 	svc        *drive.Service
 	interval   time.Duration
 	tokenPath  string
@@ -26,14 +27,14 @@ type GDrivePoller struct {
 	eventCh    chan model.FileEvent
 }
 
-func NewGdrivePoller(jobID uint, folderPath string, interval time.Duration) (*GDrivePoller, error) {
+func NewSource(jobID uint, folderPath string, interval time.Duration) (*Source, error) {
 	ctx := context.Background()
 	svc, err := auth.NewDriveService(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	tmp := &GDriveSyncer{svc: svc, idCache: make(map[string]string)}
+	tmp := &Uploader{svc: svc, idCache: make(map[string]string)}
 	folderID, err := tmp.ensureFolderPath(folderPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find gdrive folder: %w", err)
@@ -45,10 +46,11 @@ func NewGdrivePoller(jobID uint, folderPath string, interval time.Duration) (*GD
 	}
 	tokenPath := filepath.Join(home, ".synco", fmt.Sprintf("gdrive_pagetoken_%d", jobID))
 
-	p := &GDrivePoller{
+	p := &Source{
 		folderPath: folderPath,
 		folderID:   folderID,
 		knownDirs:  make(map[string]bool),
+		pathByID:   make(map[string]string),
 		svc:        svc,
 		interval:   interval,
 		tokenPath:  tokenPath,
@@ -70,11 +72,11 @@ func NewGdrivePoller(jobID uint, folderPath string, interval time.Duration) (*GD
 	return p, nil
 }
 
-func (p *GDrivePoller) Events() <-chan model.FileEvent {
+func (p *Source) Events() <-chan model.FileEvent {
 	return p.eventCh
 }
 
-func (p *GDrivePoller) Start() error {
+func (p *Source) Start() error {
 	token, err := p.loadPageToken()
 	if err != nil {
 		resp, err := p.svc.Changes.GetStartPageToken().Do()
@@ -98,11 +100,11 @@ func (p *GDrivePoller) Start() error {
 	return nil
 }
 
-func (p *GDrivePoller) Stop() {
+func (p *Source) Stop() {
 	close(p.stopCh)
 }
 
-func (p *GDrivePoller) poll(pageToken string) {
+func (p *Source) poll(pageToken string) {
 	defer close(p.eventCh)
 
 	ticker := time.NewTicker(p.interval)
@@ -128,7 +130,7 @@ func (p *GDrivePoller) poll(pageToken string) {
 	}
 }
 
-func (p *GDrivePoller) fetchChanges(pageToken string) (string, error) {
+func (p *Source) fetchChanges(pageToken string) (string, error) {
 	for {
 		resp, err := p.svc.Changes.List(pageToken).
 			Fields("nextPageToken, newStartPageToken, changes(fileId, removed, file(name, parents, mimeType, modifiedTime))").
@@ -150,10 +152,21 @@ func (p *GDrivePoller) fetchChanges(pageToken string) (string, error) {
 	}
 }
 
-func (p *GDrivePoller) handleChange(change *drive.Change) {
+func (p *Source) handleChange(change *drive.Change) {
 	if change.Removed || change.File == nil {
-		logger.Log.Debug("gdrive file removed",
-			zap.String("id", change.FileId))
+		if relPath, ok := p.pathByID[change.FileId]; ok {
+			event := model.FileEvent{
+				Type:      model.EventRemove,
+				Path:      relPath,
+				Timestamp: time.Now(),
+			}
+			delete(p.pathByID, change.FileId)
+			select {
+			case p.eventCh <- event:
+			case <-p.stopCh:
+			}
+		}
+
 		return
 	}
 
@@ -171,7 +184,7 @@ func (p *GDrivePoller) handleChange(change *drive.Change) {
 		return
 	}
 
-	relPath, err := p.resolveRelPath(change.FileId, file)
+	relPath, err := p.resolveRelPath(file)
 	if err != nil {
 		logger.Log.Warn("failed to resolve path",
 			zap.String("file", file.Name),
@@ -179,6 +192,7 @@ func (p *GDrivePoller) handleChange(change *drive.Change) {
 		return
 	}
 
+	p.pathByID[change.FileId] = relPath
 	event := model.FileEvent{
 		Type:      model.EventWrite,
 		Path:      relPath,
@@ -191,7 +205,7 @@ func (p *GDrivePoller) handleChange(change *drive.Change) {
 	}
 }
 
-func (p *GDrivePoller) isUnderTarget(parents []string) bool {
+func (p *Source) isUnderTarget(parents []string) bool {
 	for _, parentID := range parents {
 		if p.knownDirs[parentID] {
 			return true
@@ -201,7 +215,7 @@ func (p *GDrivePoller) isUnderTarget(parents []string) bool {
 	return false
 }
 
-func (p *GDrivePoller) resolveRelPath(fileID string, file *drive.File) (string, error) {
+func (p *Source) resolveRelPath(file *drive.File) (string, error) {
 	parts := []string{file.Name}
 	parentID := ""
 	if len(file.Parents) > 0 {
@@ -226,7 +240,7 @@ func (p *GDrivePoller) resolveRelPath(fileID string, file *drive.File) (string, 
 	return strings.Join(parts, "/"), nil
 }
 
-func (p *GDrivePoller) indexSubFolders(parentID string) error {
+func (p *Source) indexSubFolders(parentID string) error {
 	q := fmt.Sprintf("'%s' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false", parentID)
 
 	list, err := p.svc.Files.List().Q(q).Fields("files(id)").Do()
@@ -242,11 +256,11 @@ func (p *GDrivePoller) indexSubFolders(parentID string) error {
 	return nil
 }
 
-func (p *GDrivePoller) savePageToken(token string) error {
+func (p *Source) savePageToken(token string) error {
 	return os.WriteFile(p.tokenPath, []byte(token), 0600)
 }
 
-func (p *GDrivePoller) loadPageToken() (string, error) {
+func (p *Source) loadPageToken() (string, error) {
 	b, err := os.ReadFile(p.tokenPath)
 	if err != nil {
 		return "", err

@@ -10,19 +10,21 @@ import (
 	"synco/internal/auth"
 	"synco/internal/logger"
 	"synco/internal/model"
+	"synco/internal/syncer"
+	"synco/internal/util"
 
 	"go.uber.org/zap"
 	"google.golang.org/api/drive/v3"
 )
 
-type GDriveDownloadSyncer struct {
+type Downloader struct {
 	folderID string
 	dst      string
 	svc      *drive.Service
-	helper   *GDriveSyncer
+	helper   *Uploader
 }
 
-func NewGDriveDownloadSyncer(folderPath, dst string) (*GDriveDownloadSyncer, error) {
+func NewDownloader(folderPath, dst string) (*Downloader, error) {
 	absDst, err := filepath.Abs(dst)
 	if err != nil {
 		return nil, fmt.Errorf("invalid dst path: %w", err)
@@ -37,14 +39,14 @@ func NewGDriveDownloadSyncer(folderPath, dst string) (*GDriveDownloadSyncer, err
 		return nil, err
 	}
 
-	helper := &GDriveSyncer{svc: svc, idCache: make(map[string]string)}
+	helper := &Uploader{svc: svc, idCache: make(map[string]string)}
 	folderID, err := helper.ensureFolderPath(folderPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find gdrive folder: %w", err)
 	}
 	helper.rootID = folderID
 
-	return &GDriveDownloadSyncer{
+	return &Downloader{
 		folderID: folderID,
 		dst:      absDst,
 		svc:      svc,
@@ -52,33 +54,11 @@ func NewGDriveDownloadSyncer(folderPath, dst string) (*GDriveDownloadSyncer, err
 	}, nil
 }
 
-func (s *GDriveDownloadSyncer) Run(inCh <-chan model.FileEvent) <-chan model.SyncResult {
-	outCh := make(chan model.SyncResult, cap(inCh))
-
-	go func() {
-		defer close(outCh)
-
-		for event := range inCh {
-			result := s.handle(event)
-
-			if result.Err != nil {
-				logger.Log.Error("gdrive download failed",
-					zap.String("path", event.Path),
-					zap.Error(result.Err))
-			} else {
-				logger.Log.Info("gdrive downloaded",
-					zap.String("path", event.Path),
-					zap.String("dst", result.DstPath))
-			}
-
-			outCh <- result
-		}
-	}()
-
-	return outCh
+func (s *Downloader) Run(inCh <-chan model.FileEvent) <-chan model.SyncResult {
+	return syncer.RunLoop(inCh, s.handle)
 }
 
-func (s *GDriveDownloadSyncer) handle(event model.FileEvent) model.SyncResult {
+func (s *Downloader) handle(event model.FileEvent) model.SyncResult {
 	localPath := filepath.Join(s.dst, filepath.FromSlash(event.Path))
 	result := model.SyncResult{
 		Event:   event,
@@ -89,14 +69,24 @@ func (s *GDriveDownloadSyncer) handle(event model.FileEvent) model.SyncResult {
 	switch event.Type {
 	case model.EventWrite, model.EventCreate:
 		result.Err = s.downloadFile(event.Path, localPath)
-	case model.EventRemove:
-		result.Err = s.removeLocal(localPath)
+	case model.EventRemove, model.EventRename:
+		result.Err = util.RemoveIfExists(localPath)
+	}
+
+	if result.Err != nil {
+		logger.Log.Error("gdrive download failed",
+			zap.String("path", event.Path),
+			zap.Error(result.Err))
+	} else {
+		logger.Log.Info("gdrive downloaded",
+			zap.String("path", event.Path),
+			zap.String("dst", result.DstPath))
 	}
 
 	return result
 }
 
-func (s *GDriveDownloadSyncer) downloadFile(relPath, localPath string) error {
+func (s *Downloader) downloadFile(relPath, localPath string) error {
 	parts := strings.Split(relPath, "/")
 	fileName := parts[len(parts)-1]
 	dirParts := parts[:len(parts)-1]
@@ -124,31 +114,5 @@ func (s *GDriveDownloadSyncer) downloadFile(relPath, localPath string) error {
 		_ = Body.Close()
 	}(resp.Body)
 
-	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
-		return fmt.Errorf("failed to create dir: %w", err)
-	}
-
-	tmpPath := localPath + ".synco.tmp"
-	f, err := os.Create(tmpPath)
-	if err != nil {
-		return fmt.Errorf("failed to create temp file: %w", err)
-	}
-
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("failed to write to temp file: %w", err)
-	}
-
-	_ = f.Close()
-
-	return os.Rename(tmpPath, localPath)
-}
-
-func (s *GDriveDownloadSyncer) removeLocal(localPath string) error {
-	if err := os.Remove(localPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove: %w", err)
-	}
-
-	return nil
+	return util.AtomicWrite(localPath, resp.Body)
 }

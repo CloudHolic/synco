@@ -12,14 +12,12 @@ import (
 	"synco/internal/logger"
 	"synco/internal/model"
 	"synco/internal/pipeline"
-	"synco/internal/protocol"
 	"synco/internal/repository"
-	"synco/internal/server"
 	"synco/internal/syncer"
 	"synco/internal/syncer/dropbox"
 	"synco/internal/syncer/gdrive"
-	"synco/internal/vclock"
-	"synco/internal/watcher"
+	"synco/internal/syncer/local"
+	"synco/internal/syncer/tcp"
 	"time"
 
 	"go.uber.org/zap"
@@ -31,15 +29,22 @@ type JobManager struct {
 	cfg     *config.Config
 	repo    *repository.HistoryRepository
 	jobRepo *repository.JobRepository
+	nodeID  string
 }
 
-func NewJobManager(cfg *config.Config) *JobManager {
+func NewJobManager(cfg *config.Config) (*JobManager, error) {
+	nodeID, err := model.LoadOrCreateNodeID()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load node ID: %w", err)
+	}
+
 	return &JobManager{
 		jobs:    make(map[uint]*JobState),
 		cfg:     cfg,
 		repo:    repository.NewHistoryRepository(),
 		jobRepo: repository.NewJobRepository(),
-	}
+		nodeID:  nodeID,
+	}, nil
 }
 
 func (m *JobManager) StartJob(job model.Job) error {
@@ -51,35 +56,86 @@ func (m *JobManager) StartJob(job model.Job) error {
 	}
 
 	state := NewJobState(job)
-	nodeID, err := model.LoadOrCreateNodeID()
+
+	if job.SrcType == model.EndpointRemoteTCP {
+		if err := m.startDelegatedJob(job, state); err != nil {
+			return err
+		}
+
+		m.jobs[job.ID] = state
+		return nil
+	}
+
+	src, err := m.newSource(job)
 	if err != nil {
 		return err
 	}
 
-	switch job.SrcType {
-	case model.EndpointRemoteTCP:
-		if err := m.startRecvJob(job, state, nodeID); err != nil {
-			return err
-		}
-	case model.EndpointGDrive:
-		if err := m.startGDrivePullJob(job, state); err != nil {
-			return err
-		}
-	case model.EndpointDropbox:
-		if err := m.startDropboxPullJob(job, state); err != nil {
-			return err
-		}
-	default:
-		if err := m.startPushJob(job, state, nodeID); err != nil {
-			return err
-		}
+	s, err := m.newSyncer(job)
+	if err != nil {
+		return err
+	}
+
+	if err := src.Start(); err != nil {
+		return fmt.Errorf("failed to start source: %w", err)
 	}
 
 	m.jobs[job.ID] = state
+	go m.runPipeline(state, src, s)
+
+	logger.Log.Info("job started",
+		zap.Uint("id", job.ID),
+		zap.String("src", job.SrcPath),
+		zap.String("dst", job.DstPath))
+
 	return nil
 }
 
-func (m *JobManager) startRecvJob(job model.Job, state *JobState, nodeID string) error {
+func (m *JobManager) newSource(job model.Job) (syncer.EventSource, error) {
+	switch job.SrcType {
+	case model.EndpointLocal:
+		return local.NewSource(job.SrcPath, m.cfg.BufferSize)
+	case model.EndpointGDrive:
+		path := strings.TrimPrefix(job.SrcPath, "gdrive:")
+		return gdrive.NewSource(job.ID, path, 30*time.Second)
+	case model.EndpointDropbox:
+		path := strings.TrimPrefix(job.SrcPath, "dropbox:")
+		return dropbox.NewSource(job.ID, path)
+	default:
+		return nil, fmt.Errorf("unsupported src type: %s", job.SrcType)
+	}
+}
+
+func (m *JobManager) newSyncer(job model.Job) (syncer.Syncer, error) {
+	switch {
+	case job.DstType == model.EndpointLocal && job.SrcType == model.EndpointLocal:
+		return local.NewSyncer(job.SrcPath, job.DstPath, m.cfg.ConflictStrategy)
+
+	case job.DstType == model.EndpointLocal && job.SrcType == model.EndpointGDrive:
+		path := strings.TrimPrefix(job.SrcPath, "gdrive:")
+		return gdrive.NewDownloader(path, job.DstPath)
+
+	case job.DstType == model.EndpointLocal && job.SrcType == model.EndpointDropbox:
+		path := strings.TrimPrefix(job.SrcPath, "dropbox:")
+		return dropbox.NewDownloader(path, job.DstPath)
+
+	case job.DstType == model.EndpointRemoteTCP:
+		return tcp.NewSyncer(job.SrcPath, job.DstPath, m.nodeID, tcp.NewVclock())
+
+	case job.DstType == model.EndpointGDrive:
+		path := strings.TrimPrefix(job.DstPath, "gdrive:")
+		return gdrive.NewUploader(job.SrcPath, path)
+
+	case job.DstType == model.EndpointDropbox:
+		path := strings.TrimPrefix(job.DstPath, "dropbox:")
+		return dropbox.NewUploader(job.SrcPath, path)
+
+	default:
+		return nil, fmt.Errorf("unsupported job type: %s → %s", job.SrcType, job.DstType)
+	}
+}
+
+func (m *JobManager) startDelegatedJob(job model.Job, state *JobState) error {
 	recvPort := job.RecvPort
 	if recvPort == 0 {
 		port, err := findAvailablePort()
@@ -93,7 +149,7 @@ func (m *JobManager) startRecvJob(job model.Job, state *JobState, nodeID string)
 		}
 	}
 
-	srv, err := server.New(job.DstPath, fmt.Sprintf(":%d", recvPort), nodeID, m.cfg.ConflictStrategy)
+	srv, err := tcp.NewServer(job.DstPath, fmt.Sprintf(":%d", recvPort), m.nodeID, m.cfg.ConflictStrategy)
 	if err != nil {
 		return fmt.Errorf("failed to create receive server: %w", err)
 	}
@@ -109,7 +165,7 @@ func (m *JobManager) startRecvJob(job model.Job, state *JobState, nodeID string)
 	}
 	pushTo := fmt.Sprintf("%s:%d", myIP, recvPort)
 
-	if err := m.requestDelegation(job, nodeID, pushTo); err != nil {
+	if err := m.requestDelegation(job, m.nodeID, pushTo); err != nil {
 		srv.Stop()
 		return fmt.Errorf("delegation failed: %w", err)
 	}
@@ -124,101 +180,8 @@ func (m *JobManager) startRecvJob(job model.Job, state *JobState, nodeID string)
 	return nil
 }
 
-func (m *JobManager) startGDrivePullJob(job model.Job, state *JobState) error {
-	folderPath := strings.TrimPrefix(job.SrcPath, "gdrive:")
-
-	poller, err := gdrive.NewGdrivePoller(job.ID, folderPath, 30*time.Second)
-	if err != nil {
-		return fmt.Errorf("failed to create gdrive poller: %w", err)
-	}
-
-	s, err := gdrive.NewGDriveDownloadSyncer(folderPath, job.DstPath)
-	if err != nil {
-		return fmt.Errorf("failed to create gdrive download syncer: %w", err)
-	}
-
-	if err := poller.Start(); err != nil {
-		return fmt.Errorf("failed to start gdrive poller: %w", err)
-	}
-
-	state.GDrivePoller = poller
-	go m.runGDrivePipeline(state, poller, s)
-
-	logger.Log.Info("gdrive pull job started",
-		zap.Uint("id", job.ID),
-		zap.String("src", job.SrcPath),
-		zap.String("dst", job.DstPath))
-
-	return nil
-}
-
-func (m *JobManager) startDropboxPullJob(job model.Job, state *JobState) error {
-	folderPath := strings.TrimPrefix(job.SrcPath, "dropbox:")
-
-	poller, err := dropbox.NewDropboxPoller(job.ID, folderPath)
-	if err != nil {
-		return fmt.Errorf("failed to create dropbox poller: %w", err)
-	}
-
-	s, err := dropbox.NewDropboxDownloadSyncer(folderPath, job.DstPath)
-	if err != nil {
-		return fmt.Errorf("failed to create dropbox download syncer: %w", err)
-	}
-
-	if err := poller.Start(); err != nil {
-		return fmt.Errorf("failed to start dropbox poller: %w", err)
-	}
-
-	state.DropboxPoller = poller
-	go m.runDropboxPipeline(state, poller, s)
-
-	logger.Log.Info("dropbox pull job started",
-		zap.Uint("id", job.ID),
-		zap.String("src", job.SrcPath),
-		zap.String("dst", job.DstPath))
-
-	return nil
-}
-
-func (m *JobManager) startPushJob(job model.Job, state *JobState, nodeID string) error {
-	w, err := watcher.New(m.cfg.BufferSize)
-	if err != nil {
-		return err
-	}
-	if err := w.Watch(job.SrcPath); err != nil {
-		return err
-	}
-
-	vc := vclock.New()
-	var s syncer.Syncer
-	switch job.DstType {
-	case model.EndpointRemoteTCP:
-		s, err = syncer.NewRemoteSyncer(job.SrcPath, job.DstPath, nodeID, vc)
-	case model.EndpointGDrive:
-		s, err = gdrive.NewGDriveSyncer(job.SrcPath, job.DstPath)
-	case model.EndpointDropbox:
-		s, err = dropbox.NewDropboxSyncer(job.SrcPath, job.DstPath)
-	default:
-		s, err = syncer.NewLocalSyncer(job.SrcPath, job.DstPath, m.cfg.ConflictStrategy)
-	}
-
-	if err != nil {
-		w.Stop()
-		return err
-	}
-
-	go m.runPipeline(state, w, s)
-
-	logger.Log.Info("push job started",
-		zap.Uint("id", job.ID),
-		zap.String("src", job.SrcPath),
-		zap.String("dst", job.DstPath))
-
-	return nil
-}
-
 func (m *JobManager) requestDelegation(job model.Job, nodeID, pushTo string) error {
-	ep := protocol.ParseEndpoint(job.SrcPath)
+	ep := tcp.ParseEndpoint(job.SrcPath)
 	if !ep.IsRemote() {
 		return fmt.Errorf("src is not a remote endpoint")
 	}
@@ -248,9 +211,9 @@ func (m *JobManager) requestDelegation(job model.Job, nodeID, pushTo string) err
 	return nil
 }
 
-func (m *JobManager) runPipeline(state *JobState, w *watcher.Watcher, s syncer.Syncer) {
+func (m *JobManager) runPipeline(state *JobState, src syncer.EventSource, s syncer.Syncer) {
 	defer func() {
-		w.Stop()
+		src.Stop()
 
 		m.mu.Lock()
 		delete(m.jobs, state.JobID)
@@ -260,11 +223,18 @@ func (m *JobManager) runPipeline(state *JobState, w *watcher.Watcher, s syncer.S
 			zap.Uint("id", state.JobID))
 	}()
 
-	eventCh := w.Events()
-	debouncedCh := pipeline.Debounce(eventCh, 100*time.Millisecond)
-	filteredCh := pipeline.Filter(debouncedCh, m.cfg.IgnoreList)
-	checksumCh := pipeline.NewChecksumFilter().Run(filteredCh)
-	resultCh := s.Run(checksumCh)
+	eventCh := src.Events()
+
+	var processedCh <-chan model.FileEvent
+	if _, ok := src.(*local.Source); ok {
+		debouncedCh := pipeline.Debounce(eventCh, 100*time.Millisecond)
+		filteredCh := pipeline.Filter(debouncedCh, m.cfg.IgnoreList)
+		processedCh = pipeline.NewChecksumFilter().Run(filteredCh)
+	} else {
+		processedCh = pipeline.Filter(eventCh, m.cfg.IgnoreList)
+	}
+
+	resultCh := s.Run(processedCh)
 
 	for {
 		select {
@@ -302,96 +272,6 @@ func (m *JobManager) runPipeline(state *JobState, w *watcher.Watcher, s syncer.S
 	}
 }
 
-func (m *JobManager) runGDrivePipeline(state *JobState, poller *gdrive.GDrivePoller, s syncer.Syncer) {
-	defer func() {
-		m.mu.Lock()
-		delete(m.jobs, state.JobID)
-		m.mu.Unlock()
-		logger.Log.Info("gdrive job stopped",
-			zap.Uint("id", state.JobID))
-	}()
-
-	eventCh := poller.Events()
-	filteredCh := pipeline.Filter(eventCh, m.cfg.IgnoreList)
-	resultCh := s.Run(filteredCh)
-
-	for {
-		select {
-		case result, ok := <-resultCh:
-			if !ok {
-				return
-			}
-
-			if state.Status == model.JobStatusPaused {
-				continue
-			}
-
-			if err := m.repo.Save(result); err != nil {
-				logger.Log.Warn("failed to save history", zap.Error(err))
-			}
-
-			state.RecordSync(result)
-
-		case <-state.PauseCh:
-			state.SetStatus(model.JobStatusPaused)
-			_ = m.jobRepo.UpdateStatus(state.JobID, model.JobStatusPaused)
-
-		case <-state.ResumeCh:
-			state.SetStatus(model.JobStatusActive)
-			_ = m.jobRepo.UpdateStatus(state.JobID, model.JobStatusActive)
-
-		case <-state.StopCh:
-			poller.Stop()
-			return
-		}
-	}
-}
-
-func (m *JobManager) runDropboxPipeline(state *JobState, poller *dropbox.DropboxPoller, s syncer.Syncer) {
-	defer func() {
-		m.mu.Lock()
-		delete(m.jobs, state.JobID)
-		m.mu.Unlock()
-		logger.Log.Info("dropbox job stopped",
-			zap.Uint("id", state.JobID))
-	}()
-
-	eventCh := poller.Events()
-	filteredCh := pipeline.Filter(eventCh, m.cfg.IgnoreList)
-	resultCh := s.Run(filteredCh)
-
-	for {
-		select {
-		case result, ok := <-resultCh:
-			if !ok {
-				return
-			}
-
-			if state.Status == model.JobStatusPaused {
-				continue
-			}
-
-			if err := m.repo.Save(result); err != nil {
-				logger.Log.Warn("failed to save history", zap.Error(err))
-			}
-
-			state.RecordSync(result)
-
-		case <-state.PauseCh:
-			state.SetStatus(model.JobStatusPaused)
-			_ = m.jobRepo.UpdateStatus(state.JobID, model.JobStatusPaused)
-
-		case <-state.ResumeCh:
-			state.SetStatus(model.JobStatusActive)
-			_ = m.jobRepo.UpdateStatus(state.JobID, model.JobStatusActive)
-
-		case <-state.StopCh:
-			poller.Stop()
-			return
-		}
-	}
-}
-
 func (m *JobManager) StopJob(id uint) error {
 	m.mu.RLock()
 	state, exists := m.jobs[id]
@@ -403,14 +283,6 @@ func (m *JobManager) StopJob(id uint) error {
 
 	if state.RecvServer != nil {
 		state.RecvServer.Stop()
-	}
-
-	if state.GDrivePoller != nil {
-		state.GDrivePoller.Stop()
-	}
-
-	if state.DropboxPoller != nil {
-		state.DropboxPoller.Stop()
 	}
 
 	state.StopCh <- struct{}{}

@@ -1,34 +1,31 @@
-package server
+package tcp
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
-	"synco/internal/conflict"
 	"synco/internal/logger"
 	"synco/internal/model"
-	"synco/internal/protocol"
-	"synco/internal/vclock"
+	"synco/internal/syncer/conflict"
+	"synco/internal/util"
 
 	"go.uber.org/zap"
 )
 
-type TCPServer struct {
+type Server struct {
 	dst      string
 	addr     string
 	nodeID   string
-	vc       *vclock.Vclock
+	vc       *Vclock
 	resolver *conflict.Resolver
 	listener net.Listener
 	doneCh   chan struct{}
-
-	peerAddr string
-	peerSrc  string
 }
 
-func New(dst, addr, nodeID string, strategy model.ConflictStrategy) (*TCPServer, error) {
+func NewServer(dst, addr, nodeID string, strategy model.ConflictStrategy) (*Server, error) {
 	absDst, err := filepath.Abs(dst)
 	if err != nil {
 		return nil, fmt.Errorf("invalid dst path: %w", err)
@@ -38,17 +35,17 @@ func New(dst, addr, nodeID string, strategy model.ConflictStrategy) (*TCPServer,
 		return nil, fmt.Errorf("failed to create dst dir: %w", err)
 	}
 
-	return &TCPServer{
+	return &Server{
 		dst:      absDst,
 		addr:     addr,
 		nodeID:   nodeID,
-		vc:       vclock.New(),
+		vc:       NewVclock(),
 		resolver: conflict.NewResolver(strategy),
 		doneCh:   make(chan struct{}),
 	}, nil
 }
 
-func (s *TCPServer) Start() error {
+func (s *Server) Start() error {
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", s.addr, err)
@@ -64,14 +61,14 @@ func (s *TCPServer) Start() error {
 	return nil
 }
 
-func (s *TCPServer) Stop() {
+func (s *Server) Stop() {
 	close(s.doneCh)
 	if s.listener != nil {
 		_ = s.listener.Close()
 	}
 }
 
-func (s *TCPServer) accept() {
+func (s *Server) accept() {
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
@@ -88,59 +85,59 @@ func (s *TCPServer) accept() {
 	}
 }
 
-func (s *TCPServer) handleConn(conn net.Conn) {
+func (s *Server) handleConn(conn net.Conn) {
 	defer func(conn net.Conn) {
 		_ = conn.Close()
 	}(conn)
 
 	reader := bufio.NewReader(conn)
-	msg, err := protocol.ReadMessage(reader)
+	msg, err := ReadMessage(reader)
 	if err != nil {
 		logger.Log.Error("failed to read message", zap.Error(err))
-		_ = protocol.WriteResponse(conn, protocol.Response{
-			Code: protocol.ResponseErr,
+		_ = WriteResponse(conn, Response{
+			Code: ResponseErr,
 			Msg:  err.Error(),
 		})
 		return
 	}
 
 	switch msg.Type {
-	case protocol.MessageSync:
+	case MessageSync:
 		s.handleSync(conn, msg)
-	case protocol.MessageDelete:
+	case MessageDelete:
 		s.handleDelete(conn, msg)
-	case protocol.MessagePing:
-		_ = protocol.WriteResponse(conn, protocol.Response{Code: protocol.ResponseOK})
+	case MessagePing:
+		_ = WriteResponse(conn, Response{Code: ResponseOK})
 	default:
-		_ = protocol.WriteResponse(conn, protocol.Response{
-			Code: protocol.ResponseErr,
+		_ = WriteResponse(conn, Response{
+			Code: ResponseErr,
 			Msg:  fmt.Sprintf("unknown message type: %d", msg.Type),
 		})
 	}
 }
 
-func (s *TCPServer) handleSync(conn net.Conn, msg protocol.Message) {
+func (s *Server) handleSync(conn net.Conn, msg Message) {
 	dstPath := filepath.Join(s.dst, filepath.FromSlash(msg.Path))
 
-	if existing, err := protocol.FileChecksum(dstPath); err == nil {
-		if protocol.ChecksumEqual(existing, msg.Checksum) {
-			_ = protocol.WriteResponse(conn, protocol.Response{Code: protocol.ResponseSkip})
+	if existing, err := FileChecksum(dstPath); err == nil {
+		if ChecksumEqual(existing, msg.Checksum) {
+			_ = WriteResponse(conn, Response{Code: ResponseSkip})
 			return
 		}
 	}
 
 	localVC := s.vc.Snapshot()
-	relation := vclock.Compare(msg.VClock, localVC)
+	relation := Compare(msg.VClock, localVC)
 
 	switch relation {
-	case vclock.Before:
+	case Before:
 		logger.Log.Debug("skipping outdated message",
 			zap.String("path", msg.Path))
 
-		_ = protocol.WriteResponse(conn, protocol.Response{Code: protocol.ResponseSkip})
+		_ = WriteResponse(conn, Response{Code: ResponseSkip})
 		return
 
-	case vclock.Concurrent:
+	case Concurrent:
 		if dstInfo, err := os.Stat(dstPath); err == nil {
 			conflictInfo := &model.ConflictInfo{
 				Path:       msg.Path,
@@ -150,31 +147,31 @@ func (s *TCPServer) handleSync(conn net.Conn, msg protocol.Message) {
 			}
 			proceed, err := s.resolver.Resolve(conflictInfo, "", dstPath)
 			if err != nil || !proceed {
-				_ = protocol.WriteResponse(conn, protocol.Response{
-					Code: protocol.ResponseSkip,
+				_ = WriteResponse(conn, Response{
+					Code: ResponseSkip,
 					Msg:  "conflict: resolved as skip",
 				})
 				return
 			}
 		}
 
-	case vclock.After:
+	case After:
 	}
 
 	s.vc.Merge(msg.VClock)
 	s.vc.Tick(s.nodeID)
 
-	if err := protocol.ValidateChecksum(msg.Data, msg.Checksum); err != nil {
-		_ = protocol.WriteResponse(conn, protocol.Response{
-			Code: protocol.ResponseErr,
+	if err := ValidateChecksum(msg.Data, msg.Checksum); err != nil {
+		_ = WriteResponse(conn, Response{
+			Code: ResponseErr,
 			Msg:  "checksum validation failed",
 		})
 		return
 	}
 
-	if err := s.writeFile(dstPath, msg.Data); err != nil {
-		_ = protocol.WriteResponse(conn, protocol.Response{
-			Code: protocol.ResponseErr,
+	if err := util.AtomicWrite(dstPath, bytes.NewReader(msg.Data)); err != nil {
+		_ = WriteResponse(conn, Response{
+			Code: ResponseErr,
 			Msg:  err.Error(),
 		})
 		return
@@ -185,15 +182,15 @@ func (s *TCPServer) handleSync(conn net.Conn, msg protocol.Message) {
 		zap.Int("size", len(msg.Data)),
 		zap.String("origin", msg.OriginID))
 
-	_ = protocol.WriteResponse(conn, protocol.Response{Code: protocol.ResponseOK})
+	_ = WriteResponse(conn, Response{Code: ResponseOK})
 }
 
-func (s *TCPServer) handleDelete(conn net.Conn, msg protocol.Message) {
+func (s *Server) handleDelete(conn net.Conn, msg Message) {
 	dstPath := filepath.Join(s.dst, msg.Path)
 
 	if err := os.Remove(dstPath); err != nil && !os.IsNotExist(err) {
-		_ = protocol.WriteResponse(conn, protocol.Response{
-			Code: protocol.ResponseErr,
+		_ = WriteResponse(conn, Response{
+			Code: ResponseErr,
 			Msg:  err.Error(),
 		})
 
@@ -203,28 +200,5 @@ func (s *TCPServer) handleDelete(conn net.Conn, msg protocol.Message) {
 	logger.Log.Info("file deleted",
 		zap.String("path", dstPath))
 
-	_ = protocol.WriteResponse(conn, protocol.Response{Code: protocol.ResponseOK})
-}
-
-func (s *TCPServer) writeFile(dstPath string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
-		return fmt.Errorf("failed to create parent dir: %w", err)
-	}
-
-	tmpPath := dstPath + ".synco.tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
-		return err
-	}
-
-	if err := os.Rename(tmpPath, dstPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return err
-	}
-
-	return nil
-}
-
-func (s *TCPServer) SetPeer(peerAddr, peerSrc string) {
-	s.peerAddr = peerAddr
-	s.peerSrc = peerSrc
+	_ = WriteResponse(conn, Response{Code: ResponseOK})
 }

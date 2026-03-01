@@ -18,15 +18,6 @@ const (
 	tokenFile       = "gdrive_token.json"
 )
 
-func syncoDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-
-	return filepath.Join(home, ".synco"), nil
-}
-
 func loadOAuthConfig() (*oauth2.Config, error) {
 	dir, err := syncoDir()
 	if err != nil {

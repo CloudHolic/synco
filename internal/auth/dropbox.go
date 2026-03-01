@@ -160,5 +160,5 @@ func NewDropboxToken() (*oauth2.Token, error) {
 		_ = saveDropboxToken(newToken)
 	}
 
-	return token, nil
+	return newToken, nil
 }

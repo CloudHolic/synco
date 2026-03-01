@@ -29,7 +29,10 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	manager := daemon.NewJobManager(cfg)
+	manager, err := daemon.NewJobManager(cfg)
+	if err != nil {
+		return err
+	}
 
 	for _, job := range jobs {
 		if err := manager.StartJob(job); err != nil {

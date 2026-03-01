@@ -1,4 +1,4 @@
-package watcher
+package local
 
 import (
 	"fmt"

@@ -6,7 +6,7 @@ import (
 	"os/signal"
 	"synco/internal/logger"
 	"synco/internal/model"
-	"synco/internal/server"
+	"synco/internal/syncer/tcp"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -33,7 +33,7 @@ var serveCmd = &cobra.Command{
 			return err
 		}
 
-		srv, err := server.New(serveTarget, serveAddr, nodeID, cfg.ConflictStrategy)
+		srv, err := tcp.NewServer(serveTarget, serveAddr, nodeID, cfg.ConflictStrategy)
 		if err != nil {
 			return err
 		}

@@ -15,7 +15,7 @@ import (
 	"go.uber.org/zap"
 )
 
-type DropboxPoller struct {
+type Source struct {
 	folderPath string
 	client     files.Client
 	cursor     string
@@ -24,7 +24,7 @@ type DropboxPoller struct {
 	eventCh    chan model.FileEvent
 }
 
-func NewDropboxPoller(jobID uint, folderPath string) (*DropboxPoller, error) {
+func NewSource(jobID uint, folderPath string) (*Source, error) {
 	token, err := auth.NewDropboxToken()
 	if err != nil {
 		return nil, err
@@ -40,8 +40,8 @@ func NewDropboxPoller(jobID uint, folderPath string) (*DropboxPoller, error) {
 
 	cursorPath := filepath.Join(home, ".synco", fmt.Sprintf("dropbox_cursor_%d", jobID))
 
-	p := &DropboxPoller{
-		folderPath: normalizeDropboxPath(folderPath),
+	p := &Source{
+		folderPath: normalizePath(folderPath),
 		client:     client,
 		cursorPath: cursorPath,
 		stopCh:     make(chan struct{}),
@@ -54,11 +54,11 @@ func NewDropboxPoller(jobID uint, folderPath string) (*DropboxPoller, error) {
 	return p, nil
 }
 
-func (p *DropboxPoller) Events() <-chan model.FileEvent {
+func (p *Source) Events() <-chan model.FileEvent {
 	return p.eventCh
 }
 
-func (p *DropboxPoller) Start() error {
+func (p *Source) Start() error {
 	cursor, err := p.loadCursor()
 	if err != nil {
 		c, err := p.getLatestCursor()
@@ -83,11 +83,11 @@ func (p *DropboxPoller) Start() error {
 	return nil
 }
 
-func (p *DropboxPoller) Stop() {
+func (p *Source) Stop() {
 	close(p.stopCh)
 }
 
-func (p *DropboxPoller) run() {
+func (p *Source) run() {
 	defer close(p.eventCh)
 
 	for {
@@ -120,7 +120,7 @@ func (p *DropboxPoller) run() {
 	}
 }
 
-func (p *DropboxPoller) longpoll() (bool, error) {
+func (p *Source) longpoll() (bool, error) {
 	arg := files.NewListFolderLongpollArg(p.cursor)
 	arg.Timeout = 480
 
@@ -140,7 +140,7 @@ func (p *DropboxPoller) longpoll() (bool, error) {
 	return resp.Changes, nil
 }
 
-func (p *DropboxPoller) fetchChanges() error {
+func (p *Source) fetchChanges() error {
 	for {
 		arg := files.NewListFolderContinueArg(p.cursor)
 		resp, err := p.client.ListFolderContinue(arg)
@@ -163,7 +163,7 @@ func (p *DropboxPoller) fetchChanges() error {
 	return nil
 }
 
-func (p *DropboxPoller) handleEntry(entry files.IsMetadata) {
+func (p *Source) handleEntry(entry files.IsMetadata) {
 	var event model.FileEvent
 
 	switch e := entry.(type) {
@@ -200,7 +200,7 @@ func (p *DropboxPoller) handleEntry(entry files.IsMetadata) {
 	}
 }
 
-func (p *DropboxPoller) toRelPath(dropboxPath string) string {
+func (p *Source) toRelPath(dropboxPath string) string {
 	prefix := strings.ToLower(p.folderPath)
 	lower := strings.ToLower(dropboxPath)
 
@@ -212,7 +212,7 @@ func (p *DropboxPoller) toRelPath(dropboxPath string) string {
 	return strings.TrimPrefix(rel, "/")
 }
 
-func (p *DropboxPoller) getLatestCursor() (string, error) {
+func (p *Source) getLatestCursor() (string, error) {
 	arg := files.NewListFolderArg(p.folderPath)
 	arg.Recursive = true
 
@@ -224,11 +224,11 @@ func (p *DropboxPoller) getLatestCursor() (string, error) {
 	return resp.Cursor, nil
 }
 
-func (p *DropboxPoller) saveCursor(cursor string) error {
+func (p *Source) saveCursor(cursor string) error {
 	return os.WriteFile(p.cursorPath, []byte(cursor), 0600)
 }
 
-func (p *DropboxPoller) loadCursor() (string, error) {
+func (p *Source) loadCursor() (string, error) {
 	b, err := os.ReadFile(p.cursorPath)
 	if err != nil {
 		return "", err

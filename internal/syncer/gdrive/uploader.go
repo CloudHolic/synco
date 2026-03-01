@@ -2,9 +2,7 @@ package gdrive
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,13 +10,13 @@ import (
 	"synco/internal/auth"
 	"synco/internal/logger"
 	"synco/internal/model"
+	"synco/internal/syncer"
 
 	"go.uber.org/zap"
 	"google.golang.org/api/drive/v3"
-	"google.golang.org/api/googleapi"
 )
 
-type GDriveSyncer struct {
+type Uploader struct {
 	mu         sync.RWMutex
 	src        string
 	folderPath string
@@ -27,7 +25,7 @@ type GDriveSyncer struct {
 	idCache    map[string]string
 }
 
-func NewGDriveSyncer(src, folderPath string) (*GDriveSyncer, error) {
+func NewUploader(src, folderPath string) (*Uploader, error) {
 	absSrc, err := filepath.Abs(src)
 	if err != nil {
 		return nil, fmt.Errorf("invalid src path: %w", err)
@@ -39,7 +37,7 @@ func NewGDriveSyncer(src, folderPath string) (*GDriveSyncer, error) {
 		return nil, err
 	}
 
-	s := &GDriveSyncer{
+	s := &Uploader{
 		src:        absSrc,
 		folderPath: strings.TrimPrefix(folderPath, "/"),
 		svc:        svc,
@@ -60,33 +58,11 @@ func NewGDriveSyncer(src, folderPath string) (*GDriveSyncer, error) {
 	return s, nil
 }
 
-func (s *GDriveSyncer) Run(inCh <-chan model.FileEvent) <-chan model.SyncResult {
-	outCh := make(chan model.SyncResult, cap(inCh))
-
-	go func() {
-		defer close(outCh)
-
-		for event := range inCh {
-			result := s.handle(event)
-
-			if result.Err != nil {
-				logger.Log.Error("gdrive sync failed",
-					zap.String("path", event.Path),
-					zap.Error(result.Err))
-			} else {
-				logger.Log.Info("gdrive synced",
-					zap.String("type", string(event.Type)),
-					zap.String("path", event.Path))
-			}
-
-			outCh <- result
-		}
-	}()
-
-	return outCh
+func (s *Uploader) Run(inCh <-chan model.FileEvent) <-chan model.SyncResult {
+	return syncer.RunLoop(inCh, s.handle)
 }
 
-func (s *GDriveSyncer) handle(event model.FileEvent) model.SyncResult {
+func (s *Uploader) handle(event model.FileEvent) model.SyncResult {
 	result := model.SyncResult{
 		Event:   event,
 		SrcPath: event.Path,
@@ -100,10 +76,20 @@ func (s *GDriveSyncer) handle(event model.FileEvent) model.SyncResult {
 		result.Err = s.deleteFile(event.Path)
 	}
 
+	if result.Err != nil {
+		logger.Log.Error("gdrive sync failed",
+			zap.String("path", event.Path),
+			zap.Error(result.Err))
+	} else {
+		logger.Log.Info("gdrive synced",
+			zap.String("type", string(event.Type)),
+			zap.String("path", event.Path))
+	}
+
 	return result
 }
 
-func (s *GDriveSyncer) uploadFile(localPath string) error {
+func (s *Uploader) uploadFile(localPath string) error {
 	relPath := s.relPath(localPath)
 	parentID, err := s.ensureParentFolders(relPath)
 	if err != nil {
@@ -150,7 +136,7 @@ func (s *GDriveSyncer) uploadFile(localPath string) error {
 	return nil
 }
 
-func (s *GDriveSyncer) deleteFile(localPath string) error {
+func (s *Uploader) deleteFile(localPath string) error {
 	relPath := s.relPath(localPath)
 
 	fileID := s.getCachedID(relPath)
@@ -181,7 +167,7 @@ func (s *GDriveSyncer) deleteFile(localPath string) error {
 	return nil
 }
 
-func (s *GDriveSyncer) ensureFolderPath(folderPath string) (string, error) {
+func (s *Uploader) ensureFolderPath(folderPath string) (string, error) {
 	parts := splitPath(folderPath)
 	if len(parts) == 0 {
 		return "root", nil
@@ -207,7 +193,7 @@ func (s *GDriveSyncer) ensureFolderPath(folderPath string) (string, error) {
 	return parentID, nil
 }
 
-func (s *GDriveSyncer) ensureParentFolders(relPath string) (string, error) {
+func (s *Uploader) ensureParentFolders(relPath string) (string, error) {
 	dir := filepath.ToSlash(filepath.Dir(relPath))
 	if dir == "." || dir == "" {
 		return s.rootID, nil
@@ -244,7 +230,7 @@ func (s *GDriveSyncer) ensureParentFolders(relPath string) (string, error) {
 	return parentID, nil
 }
 
-func (s *GDriveSyncer) findFolder(name, parentID string) (string, error) {
+func (s *Uploader) findFolder(name, parentID string) (string, error) {
 	q := fmt.Sprintf("name='%s' and '%s' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false", escapeName(name), parentID)
 
 	list, err := s.svc.Files.List().Q(q).Fields("files(id)").Do()
@@ -258,7 +244,7 @@ func (s *GDriveSyncer) findFolder(name, parentID string) (string, error) {
 	return list.Files[0].Id, nil
 }
 
-func (s *GDriveSyncer) findFolderByPath(relPath string) (string, error) {
+func (s *Uploader) findFolderByPath(relPath string) (string, error) {
 	if relPath == "." || relPath == "" {
 		return s.rootID, nil
 	}
@@ -277,7 +263,7 @@ func (s *GDriveSyncer) findFolderByPath(relPath string) (string, error) {
 	return parentID, nil
 }
 
-func (s *GDriveSyncer) findFile(name, parentID string) (string, error) {
+func (s *Uploader) findFile(name, parentID string) (string, error) {
 	q := fmt.Sprintf("name='%s' and '%s' in parents and mimeType!='application/vnd.google-apps.folder' and trahsed=false", escapeName(name), parentID)
 
 	list, err := s.svc.Files.List().Q(q).Fields("files(id)").Do()
@@ -292,7 +278,7 @@ func (s *GDriveSyncer) findFile(name, parentID string) (string, error) {
 	return list.Files[0].Id, nil
 }
 
-func (s *GDriveSyncer) createFolder(name, parentID string) (string, error) {
+func (s *Uploader) createFolder(name, parentID string) (string, error) {
 	f := &drive.File{
 		Name:     name,
 		MimeType: "application/vnd.google-apps.folder",
@@ -307,7 +293,7 @@ func (s *GDriveSyncer) createFolder(name, parentID string) (string, error) {
 	return created.Id, nil
 }
 
-func (s *GDriveSyncer) relPath(localPath string) string {
+func (s *Uploader) relPath(localPath string) string {
 	rel, err := filepath.Rel(s.src, localPath)
 	if err != nil {
 		return filepath.Base(localPath)
@@ -316,41 +302,20 @@ func (s *GDriveSyncer) relPath(localPath string) string {
 	return filepath.ToSlash(rel)
 }
 
-func (s *GDriveSyncer) getCachedID(key string) string {
+func (s *Uploader) getCachedID(key string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.idCache[key]
 }
 
-func (s *GDriveSyncer) setCachedID(key, id string) {
+func (s *Uploader) setCachedID(key, id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.idCache[key] = id
 }
 
-func (s *GDriveSyncer) deleteCachedID(key string) {
+func (s *Uploader) deleteCachedID(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.idCache, key)
-}
-
-func splitPath(p string) []string {
-	p = strings.Trim(filepath.ToSlash(p), "/")
-	if p == "" {
-		return nil
-	}
-
-	return strings.Split(p, "/")
-}
-
-func escapeName(name string) string {
-	return strings.ReplaceAll(name, "'", "\\'")
-}
-
-func isNotFound(err error) bool {
-	if apiErr, ok := errors.AsType[*googleapi.Error](err); ok {
-		return apiErr.Code == http.StatusNotFound
-	}
-
-	return false
 }

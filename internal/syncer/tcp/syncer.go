@@ -1,4 +1,4 @@
-package syncer
+package tcp
 
 import (
 	"bufio"
@@ -9,27 +9,25 @@ import (
 	"strings"
 	"synco/internal/logger"
 	"synco/internal/model"
-	"synco/internal/protocol"
-	"synco/internal/vclock"
 	"time"
 
 	"go.uber.org/zap"
 )
 
-type RemoteSyncer struct {
+type Syncer struct {
 	src    string
 	addr   string
 	nodeID string
-	vc     *vclock.Vclock
+	vc     *Vclock
 }
 
-func NewRemoteSyncer(src, addr, nodeID string, vc *vclock.Vclock) (*RemoteSyncer, error) {
+func NewSyncer(src, addr, nodeID string, vc *Vclock) (*Syncer, error) {
 	absSrc, err := filepath.Abs(src)
 	if err != nil {
 		return nil, fmt.Errorf("invalid src path: %w", err)
 	}
 
-	return &RemoteSyncer{
+	return &Syncer{
 		src:    absSrc,
 		addr:   addr,
 		nodeID: nodeID,
@@ -37,7 +35,7 @@ func NewRemoteSyncer(src, addr, nodeID string, vc *vclock.Vclock) (*RemoteSyncer
 	}, nil
 }
 
-func (s *RemoteSyncer) Run(inCh <-chan model.FileEvent) <-chan model.SyncResult {
+func (s *Syncer) Run(inCh <-chan model.FileEvent) <-chan model.SyncResult {
 	outCh := make(chan model.SyncResult, cap(inCh))
 
 	go func() {
@@ -63,7 +61,7 @@ func (s *RemoteSyncer) Run(inCh <-chan model.FileEvent) <-chan model.SyncResult 
 	return outCh
 }
 
-func (s *RemoteSyncer) handle(event model.FileEvent) model.SyncResult {
+func (s *Syncer) handle(event model.FileEvent) model.SyncResult {
 	result := model.SyncResult{
 		Event:   event,
 		SrcPath: event.Path,
@@ -92,13 +90,13 @@ func (s *RemoteSyncer) handle(event model.FileEvent) model.SyncResult {
 	return result
 }
 
-func (s *RemoteSyncer) sendFile(conn net.Conn, reader *bufio.Reader, path string) error {
+func (s *Syncer) sendFile(conn net.Conn, reader *bufio.Reader, path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("failed to stat file: %w", err)
 	}
 
-	checksum, err := protocol.FileChecksum(path)
+	checksum, err := FileChecksum(path)
 	if err != nil {
 		return fmt.Errorf("failed to compute checksum: %w", err)
 	}
@@ -115,8 +113,8 @@ func (s *RemoteSyncer) sendFile(conn net.Conn, reader *bufio.Reader, path string
 
 	s.vc.Tick(s.nodeID)
 
-	msg := protocol.Message{
-		Type:     protocol.MessageSync,
+	msg := Message{
+		Type:     MessageSync,
 		OriginID: s.nodeID,
 		VClock:   s.vc.Snapshot(),
 		Path:     filepath.ToSlash(relPath),
@@ -125,54 +123,54 @@ func (s *RemoteSyncer) sendFile(conn net.Conn, reader *bufio.Reader, path string
 		Data:     data,
 	}
 
-	if err := protocol.WriteMessage(conn, msg); err != nil {
+	if err := WriteMessage(conn, msg); err != nil {
 		return fmt.Errorf("failed to send message: %w", err)
 	}
 
-	resp, err := protocol.ReadResponse(reader)
+	resp, err := ReadResponse(reader)
 	if err != nil {
 		return fmt.Errorf("failed to read response: %w", err)
 	}
 
-	if resp.Code == protocol.ResponseOK {
+	if resp.Code == ResponseOK {
 		s.vc.Merge(resp.VClock)
 	}
 
 	switch resp.Code {
-	case protocol.ResponseOK:
+	case ResponseOK:
 		return nil
-	case protocol.ResponseSkip:
+	case ResponseSkip:
 		logger.Log.Debug("server skipped (checksum match)",
 			zap.String("path", path))
 		return nil
-	case protocol.ResponseErr:
+	case ResponseErr:
 		return fmt.Errorf("server error :%s", resp.Msg)
 	default:
 		return fmt.Errorf("unknown response code: %d", resp.Code)
 	}
 }
 
-func (s *RemoteSyncer) sendDelete(conn net.Conn, reader *bufio.Reader, path string) error {
+func (s *Syncer) sendDelete(conn net.Conn, reader *bufio.Reader, path string) error {
 	relPath, err := filepath.Rel(s.src, path)
 	if err != nil || strings.HasPrefix(relPath, "..") {
 		relPath = filepath.Base(path)
 	}
 
-	msg := protocol.Message{
-		Type: protocol.MessageDelete,
+	msg := Message{
+		Type: MessageDelete,
 		Path: filepath.ToSlash(relPath),
 	}
 
-	if err := protocol.WriteMessage(conn, msg); err != nil {
+	if err := WriteMessage(conn, msg); err != nil {
 		return fmt.Errorf("failed to send delete: %w", err)
 	}
 
-	resp, err := protocol.ReadResponse(reader)
+	resp, err := ReadResponse(reader)
 	if err != nil {
 		return fmt.Errorf("failed to read response: %w", err)
 	}
 
-	if resp.Code == protocol.ResponseErr {
+	if resp.Code == ResponseErr {
 		return fmt.Errorf("server error: %s", resp.Msg)
 	}
 

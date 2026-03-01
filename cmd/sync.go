@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"synco/internal/logger"
 	"synco/internal/repository"
-	"synco/internal/syncer"
+	"synco/internal/syncer/local"
 
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -18,7 +18,7 @@ var syncCmd = &cobra.Command{
 		defer logger.Sync()
 		src, dst := args[0], args[1]
 
-		s, err := syncer.NewLocalSyncer(src, dst, cfg.ConflictStrategy)
+		s, err := local.NewSyncer(src, dst, cfg.ConflictStrategy)
 		if err != nil {
 			return err
 		}

@@ -3,28 +3,24 @@ package daemon
 import (
 	"sync"
 	"synco/internal/model"
-	"synco/internal/server"
-	"synco/internal/syncer/dropbox"
-	"synco/internal/syncer/gdrive"
+	"synco/internal/syncer/tcp"
 	"time"
 )
 
 type JobState struct {
-	mu            sync.RWMutex
-	JobID         uint
-	Src           string
-	Dst           string
-	Status        model.JobStatus
-	StartedAt     time.Time
-	Synced        int
-	Failed        int
-	LastSync      *time.Time
-	PauseCh       chan struct{}
-	ResumeCh      chan struct{}
-	StopCh        chan struct{}
-	RecvServer    *server.TCPServer
-	GDrivePoller  *gdrive.GDrivePoller
-	DropboxPoller *dropbox.DropboxPoller
+	mu         sync.RWMutex
+	JobID      uint
+	Src        string
+	Dst        string
+	Status     model.JobStatus
+	StartedAt  time.Time
+	Synced     int
+	Failed     int
+	LastSync   *time.Time
+	PauseCh    chan struct{}
+	ResumeCh   chan struct{}
+	StopCh     chan struct{}
+	RecvServer *tcp.Server
 }
 
 func NewJobState(job model.Job) *JobState {
@@ -58,22 +54,11 @@ func (s *JobState) SetStatus(status model.JobStatus) {
 	s.Status = status
 }
 
-type JobSnapshot struct {
-	JobID     uint            `json:"job_id"`
-	Src       string          `json:"src"`
-	Dst       string          `json:"dst"`
-	Status    model.JobStatus `json:"status"`
-	StartedAt time.Time       `json:"started_at"`
-	Synced    int             `json:"synced"`
-	Failed    int             `json:"failed"`
-	LastSync  *time.Time      `json:"last_sync"`
-}
-
-func (s *JobState) Snapshot() JobSnapshot {
+func (s *JobState) Snapshot() model.JobSnapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	return JobSnapshot{
+	return model.JobSnapshot{
 		JobID:     s.JobID,
 		Src:       s.Src,
 		Dst:       s.Dst,
