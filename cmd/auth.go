@@ -16,7 +16,7 @@ var authDropboxCmd = &cobra.Command{
 	Use:   "dropbox",
 	Short: "Authenticate with Dropbox",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := auth.AuthorizeDropbox(); err != nil {
+		if err := auth.Dropbox.Authorize(); err != nil {
 			return err
 		}
 
@@ -29,7 +29,7 @@ var authGDriveCmd = &cobra.Command{
 	Use:   "gdrive",
 	Short: "Authenticate with Google Drive",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := auth.Authorize(); err != nil {
+		if err := auth.GDrive.Authorize(); err != nil {
 			return err
 		}
 

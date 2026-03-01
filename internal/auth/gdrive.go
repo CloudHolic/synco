@@ -14,31 +14,19 @@ import (
 )
 
 const (
-	credentialsFile = "gdrive_credentials.json"
-	tokenFile       = "gdrive_token.json"
+	gdriveCredFile  = "gdrive_credentials.json"
+	gdriveTokenFile = "gdrive_token.json"
 )
 
-func loadOAuthConfig() (*oauth2.Config, error) {
-	dir, err := syncoDir()
-	if err != nil {
-		return nil, err
-	}
+type gdriveProvider struct{}
 
-	b, err := os.ReadFile(filepath.Join(dir, credentialsFile))
-	if err != nil {
-		return nil, fmt.Errorf("gdrive_credentials.json not found in ~/.synco: %w", err)
-	}
-
-	cfg, err := google.ConfigFromJSON(b, drive.DriveFileScope)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse credentials: %w", err)
-	}
-
-	return cfg, nil
+func (g *gdriveProvider) NewClient() (files.Client, error) {
+	//TODO implement me
+	panic("implement me")
 }
 
-func Authorize() error {
-	cfg, err := loadOAuthConfig()
+func (g *gdriveProvider) Authorize() error {
+	cfg, err := g.loadConfig()
 	if err != nil {
 		return err
 	}
@@ -60,16 +48,65 @@ func Authorize() error {
 		return fmt.Errorf("failed to exchange token: %w", err)
 	}
 
-	return saveToken(token)
+	return g.saveToken(token)
 }
 
-func saveToken(token *oauth2.Token) error {
+func (g *gdriveProvider) NewService(ctx context.Context) (*drive.Service, error) {
+	cfg, err := g.loadConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	token, err := g.loadToken()
+	if err != nil {
+		return nil, err
+	}
+
+	tokenSource := cfg.TokenSource(ctx, token)
+
+	newToken, err := tokenSource.Token()
+	if err != nil {
+		return nil, fmt.Errorf("failed to refresh token: %w", err)
+	}
+
+	if newToken.AccessToken != token.AccessToken {
+		_ = g.saveToken(newToken)
+	}
+
+	svc, err := drive.NewService(ctx, option.WithTokenSource(tokenSource))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create gdrive service: %w", err)
+	}
+
+	return svc, nil
+}
+
+func (g *gdriveProvider) loadConfig() (*oauth2.Config, error) {
+	dir, err := syncoDir()
+	if err != nil {
+		return nil, err
+	}
+
+	b, err := os.ReadFile(filepath.Join(dir, gdriveCredFile))
+	if err != nil {
+		return nil, fmt.Errorf("gdrive_credentials.json not found in ~/.synco: %w", err)
+	}
+
+	cfg, err := google.ConfigFromJSON(b, drive.DriveFileScope)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse credentials: %w", err)
+	}
+
+	return cfg, nil
+}
+
+func (g *gdriveProvider) saveToken(token *oauth2.Token) error {
 	dir, err := syncoDir()
 	if err != nil {
 		return err
 	}
 
-	path := filepath.Join(dir, tokenFile)
+	path := filepath.Join(dir, gdriveTokenFile)
 	b, err := json.Marshal(token)
 	if err != nil {
 		return err
@@ -83,13 +120,13 @@ func saveToken(token *oauth2.Token) error {
 	return nil
 }
 
-func loadToken() (*oauth2.Token, error) {
+func (g *gdriveProvider) loadToken() (*oauth2.Token, error) {
 	dir, err := syncoDir()
 	if err != nil {
 		return nil, err
 	}
 
-	b, err := os.ReadFile(filepath.Join(dir, tokenFile))
+	b, err := os.ReadFile(filepath.Join(dir, gdriveTokenFile))
 	if err != nil {
 		return nil, fmt.Errorf("gdrive auth needed. Please run 'synco auth gdrive' first: %w", err)
 	}
@@ -100,34 +137,4 @@ func loadToken() (*oauth2.Token, error) {
 	}
 
 	return &token, nil
-}
-
-func NewDriveService(ctx context.Context) (*drive.Service, error) {
-	cfg, err := loadOAuthConfig()
-	if err != nil {
-		return nil, err
-	}
-
-	token, err := loadToken()
-	if err != nil {
-		return nil, err
-	}
-
-	tokenSource := cfg.TokenSource(ctx, token)
-
-	newToken, err := tokenSource.Token()
-	if err != nil {
-		return nil, fmt.Errorf("failed to refresh token: %w", err)
-	}
-
-	if newToken.AccessToken != token.AccessToken {
-		_ = saveToken(newToken)
-	}
-
-	svc, err := drive.NewService(ctx, option.WithTokenSource(tokenSource))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create gdrive service: %w", err)
-	}
-
-	return svc, nil
 }

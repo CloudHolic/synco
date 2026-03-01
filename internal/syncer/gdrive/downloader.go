@@ -34,7 +34,7 @@ func NewDownloader(folderPath, dst string) (*Downloader, error) {
 	}
 
 	ctx := context.Background()
-	svc, err := auth.NewDriveService(ctx)
+	svc, err := auth.GDrive.NewService(ctx)
 	if err != nil {
 		return nil, err
 	}

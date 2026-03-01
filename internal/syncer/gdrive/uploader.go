@@ -32,7 +32,7 @@ func NewUploader(src, folderPath string) (*Uploader, error) {
 	}
 
 	ctx := context.Background()
-	svc, err := auth.NewDriveService(ctx)
+	svc, err := auth.GDrive.NewService(ctx)
 	if err != nil {
 		return nil, err
 	}

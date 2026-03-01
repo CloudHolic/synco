@@ -26,13 +26,10 @@ func NewUploader(src, folderPath string) (*Uploader, error) {
 		return nil, fmt.Errorf("invalid src path: %w", err)
 	}
 
-	token, err := auth.NewDropboxToken()
+	client, err := auth.Dropbox.NewClient()
 	if err != nil {
 		return nil, err
 	}
-
-	cfg := dropbox.Config{Token: token.AccessToken}
-	client := files.New(cfg)
 
 	folderPath = normalizePath(folderPath)
 	if err := ensureFolder(client, folderPath); err != nil {

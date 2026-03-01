@@ -11,5 +11,10 @@ func syncoDir() (string, error) {
 		return "", err
 	}
 
-	return filepath.Join(home, ".synco"), nil
+	dir := filepath.Join(home, ".synco")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", err
+	}
+
+	return dir, nil
 }

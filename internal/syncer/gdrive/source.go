@@ -29,7 +29,7 @@ type Source struct {
 
 func NewSource(jobID uint, folderPath string, interval time.Duration) (*Source, error) {
 	ctx := context.Background()
-	svc, err := auth.NewDriveService(ctx)
+	svc, err := auth.GDrive.NewService(ctx)
 	if err != nil {
 		return nil, err
 	}

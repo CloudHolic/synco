@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox"
+	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/files"
 	"golang.org/x/oauth2"
 )
 
@@ -27,33 +29,10 @@ var dropboxEndpoint = oauth2.Endpoint{
 	TokenURL: "https://api.dropboxapi.com/oauth2/token",
 }
 
-func loadDropboxConfig() (*oauth2.Config, error) {
-	dir, err := syncoDir()
-	if err != nil {
-		return nil, err
-	}
+type dropboxProvider struct{}
 
-	b, err := os.ReadFile(filepath.Join(dir, dropboxCredFile))
-	if err != nil {
-		return nil, fmt.Errorf("dropbox_credentials.json not found in ~/.synco: %w", err)
-	}
-
-	var creds dropboxCredentials
-	if err := json.Unmarshal(b, &creds); err != nil {
-		return nil, fmt.Errorf("failed to parse dropbox credentials: %w", err)
-	}
-
-	return &oauth2.Config{
-		ClientID:     creds.AppKey,
-		ClientSecret: creds.AppSecret,
-		Endpoint:     dropboxEndpoint,
-		RedirectURL:  "http://localhost:9999/callback",
-		Scopes:       []string{"files.content.read", "files.content.write"},
-	}, nil
-}
-
-func AuthorizeDropbox() error {
-	cfg, err := loadDropboxConfig()
+func (d *dropboxProvider) Authorize() error {
+	cfg, err := d.loadConfig()
 	if err != nil {
 		return err
 	}
@@ -92,7 +71,7 @@ func AuthorizeDropbox() error {
 			return fmt.Errorf("failed to exchange token: %w", err)
 		}
 
-		return saveDropboxToken(token)
+		return d.saveToken(token)
 
 	case <-time.After(2 * time.Minute):
 		_ = srv.Shutdown(context.Background())
@@ -100,7 +79,42 @@ func AuthorizeDropbox() error {
 	}
 }
 
-func saveDropboxToken(token *oauth2.Token) error {
+func (d *dropboxProvider) NewClient() (files.Client, error) {
+	token, err := d.refreshedToken()
+	if err != nil {
+		return nil, err
+	}
+
+	cfg := dropbox.Config{Token: token.AccessToken}
+	return files.New(cfg), nil
+}
+
+func (d *dropboxProvider) loadConfig() (*oauth2.Config, error) {
+	dir, err := syncoDir()
+	if err != nil {
+		return nil, err
+	}
+
+	b, err := os.ReadFile(filepath.Join(dir, dropboxCredFile))
+	if err != nil {
+		return nil, fmt.Errorf("dropbox_credentials.json not found in ~/.synco: %w", err)
+	}
+
+	var creds dropboxCredentials
+	if err := json.Unmarshal(b, &creds); err != nil {
+		return nil, fmt.Errorf("failed to parse dropbox credentials: %w", err)
+	}
+
+	return &oauth2.Config{
+		ClientID:     creds.AppKey,
+		ClientSecret: creds.AppSecret,
+		Endpoint:     dropboxEndpoint,
+		RedirectURL:  "http://localhost:9999/callback",
+		Scopes:       []string{"files.content.read", "files.content.write"},
+	}, nil
+}
+
+func (d *dropboxProvider) saveToken(token *oauth2.Token) error {
 	dir, err := syncoDir()
 	if err != nil {
 		return err
@@ -120,7 +134,7 @@ func saveDropboxToken(token *oauth2.Token) error {
 	return nil
 }
 
-func loadDropboxToken() (*oauth2.Token, error) {
+func (d *dropboxProvider) loadToken() (*oauth2.Token, error) {
 	dir, err := syncoDir()
 	if err != nil {
 		return nil, err
@@ -139,13 +153,13 @@ func loadDropboxToken() (*oauth2.Token, error) {
 	return &token, nil
 }
 
-func NewDropboxToken() (*oauth2.Token, error) {
-	cfg, err := loadDropboxConfig()
+func (d *dropboxProvider) refreshedToken() (*oauth2.Token, error) {
+	cfg, err := d.loadConfig()
 	if err != nil {
 		return nil, err
 	}
 
-	token, err := loadDropboxToken()
+	token, err := d.loadToken()
 	if err != nil {
 		return nil, err
 	}
@@ -153,11 +167,11 @@ func NewDropboxToken() (*oauth2.Token, error) {
 	tokenSource := cfg.TokenSource(context.Background(), token)
 	newToken, err := tokenSource.Token()
 	if err != nil {
-		return nil, fmt.Errorf("failed to refresh dropbox token: %w", err)
+		return nil, fmt.Errorf("failed to refresh token: %w", err)
 	}
 
 	if newToken.AccessToken != token.AccessToken {
-		_ = saveDropboxToken(newToken)
+		_ = d.saveToken(newToken)
 	}
 
 	return newToken, nil

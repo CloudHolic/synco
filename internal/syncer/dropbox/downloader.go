@@ -12,7 +12,6 @@ import (
 	"synco/internal/syncer"
 	"synco/internal/util"
 
-	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox"
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/files"
 	"go.uber.org/zap"
 )
@@ -33,13 +32,10 @@ func NewDownloader(folderPath, dst string) (*Downloader, error) {
 		return nil, fmt.Errorf("failed to create dst dir: %w", err)
 	}
 
-	token, err := auth.NewDropboxToken()
+	client, err := auth.Dropbox.NewClient()
 	if err != nil {
 		return nil, err
 	}
-
-	cfg := dropbox.Config{Token: token.AccessToken}
-	client := files.New(cfg)
 
 	return &Downloader{
 		folderPath: normalizePath(folderPath),

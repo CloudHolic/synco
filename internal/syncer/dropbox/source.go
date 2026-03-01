@@ -10,7 +10,6 @@ import (
 	"synco/internal/model"
 	"time"
 
-	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox"
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/files"
 	"go.uber.org/zap"
 )
@@ -25,13 +24,10 @@ type Source struct {
 }
 
 func NewSource(jobID uint, folderPath string) (*Source, error) {
-	token, err := auth.NewDropboxToken()
+	client, err := auth.Dropbox.NewClient()
 	if err != nil {
 		return nil, err
 	}
-
-	cfg := dropbox.Config{Token: token.AccessToken}
-	client := files.New(cfg)
 
 	home, err := os.UserHomeDir()
 	if err != nil {
