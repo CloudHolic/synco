@@ -9,6 +9,7 @@ import (
 	"synco/internal/auth"
 	"synco/internal/logger"
 	"synco/internal/model"
+	"synco/internal/retry"
 	"time"
 
 	"go.uber.org/zap"
@@ -110,27 +111,79 @@ func (p *Source) poll(pageToken string) {
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
 
+	consecutiveErrs := 0
+
 	for {
 		select {
 		case <-p.stopCh:
 			return
 		case <-ticker.C:
 			newToken, err := p.fetchChanges(pageToken)
-			if err != nil {
-				logger.Log.Warn("gdrive poll error",
-					zap.Error(err))
+
+			if err == nil {
+				consecutiveErrs = 0
+				if newToken != pageToken {
+					pageToken = newToken
+					_ = p.savePageToken(pageToken)
+				}
+
 				continue
 			}
 
-			if newToken != pageToken {
-				pageToken = newToken
-				_ = p.savePageToken(pageToken)
+			consecutiveErrs++
+			logger.Log.Warn("gdrive poll error",
+				zap.Error(err),
+				zap.Int("consecutive_errors", consecutiveErrs))
+
+			if isUnauthorized(err) || consecutiveErrs >= 3 {
+				if reconnErr := p.reconnect(); reconnErr != nil {
+					logger.Log.Error("gdrive reconnect failed",
+						zap.Error(reconnErr))
+				} else {
+					logger.Log.Info("gdrive reconnected")
+					consecutiveErrs = 0
+				}
 			}
 		}
 	}
 }
 
+func (p *Source) reconnect() error {
+	return retry.Do(context.Background(), retry.Config{
+		MaxAttempts: 3,
+		BaseDelay:   2 * time.Second,
+		MaxDelay:    30 * time.Second,
+	}, func(attempt int) error {
+		svc, err := auth.GDrive.NewService(context.Background())
+		if err != nil {
+			return err
+		}
+
+		p.svc = svc
+		return nil
+	})
+}
+
 func (p *Source) fetchChanges(pageToken string) (string, error) {
+	var newToken string
+	err := retry.Do(context.Background(), retry.Config{
+		MaxAttempts: 3,
+		BaseDelay:   1 * time.Second,
+		MaxDelay:    10 * time.Second,
+	}, func(attempt int) error {
+		token, err := p.doFetchChanges(pageToken)
+		if err != nil {
+			return err
+		}
+
+		newToken = token
+		return nil
+	})
+
+	return newToken, err
+}
+
+func (p *Source) doFetchChanges(pageToken string) (string, error) {
 	for {
 		resp, err := p.svc.Changes.List(pageToken).
 			Fields("nextPageToken, newStartPageToken, changes(fileId, removed, file(name, parents, mimeType, modifiedTime))").

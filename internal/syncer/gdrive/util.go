@@ -22,6 +22,15 @@ func escapeName(name string) string {
 	return strings.ReplaceAll(name, "'", "\\'")
 }
 
+func isUnauthorized(err error) bool {
+	if apiErr, ok := errors.AsType[*googleapi.Error](err); ok {
+		return apiErr.Code == http.StatusUnauthorized ||
+			apiErr.Code == http.StatusForbidden
+	}
+
+	return false
+}
+
 func isNotFound(err error) bool {
 	if apiErr, ok := errors.AsType[*googleapi.Error](err); ok {
 		return apiErr.Code == http.StatusNotFound

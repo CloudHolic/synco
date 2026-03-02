@@ -1,12 +1,14 @@
 package dropbox
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"synco/internal/auth"
 	"synco/internal/logger"
 	"synco/internal/model"
+	"synco/internal/retry"
 	"time"
 
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/files"
@@ -85,6 +87,8 @@ func (p *Source) Stop() {
 func (p *Source) run() {
 	defer close(p.eventCh)
 
+	consecutiveErrors := 0
+
 	for {
 		select {
 		case <-p.stopCh:
@@ -94,15 +98,37 @@ func (p *Source) run() {
 
 		changed, err := p.longpoll()
 		if err != nil {
-			logger.Log.Warn("dropbox longpoll error", zap.Error(err))
+			consecutiveErrors++
+			logger.Log.Warn("dropbox longpoll error",
+				zap.Error(err),
+				zap.Int("consecutiveErrors", consecutiveErrors))
 
-			select {
-			case <-p.stopCh:
-				return
-			case <-time.After(10 * time.Second):
-				continue
+			if isAuth(err) || consecutiveErrors >= 3 {
+				if reconnErr := p.reconnect(); reconnErr != nil {
+					logger.Log.Error("dropbox reconnect failed",
+						zap.Error(err))
+
+					select {
+					case <-p.stopCh:
+						return
+					case <-time.After(30 * time.Second):
+					}
+				} else {
+					logger.Log.Info("dropbox reconnected")
+					consecutiveErrors = 0
+				}
+			} else {
+				select {
+				case <-p.stopCh:
+					return
+				case <-time.After(10 * time.Second):
+				}
 			}
+
+			continue
 		}
+
+		consecutiveErrors = 0
 
 		if !changed {
 			continue
@@ -113,6 +139,22 @@ func (p *Source) run() {
 				zap.Error(err))
 		}
 	}
+}
+
+func (p *Source) reconnect() error {
+	return retry.Do(context.Background(), retry.Config{
+		MaxAttempts: 3,
+		BaseDelay:   2 * time.Second,
+		MaxDelay:    30 * time.Second,
+	}, func(attempt int) error {
+		client, err := auth.Dropbox.NewClient()
+		if err != nil {
+			return err
+		}
+
+		p.client = client
+		return nil
+	})
 }
 
 func (p *Source) longpoll() (bool, error) {
@@ -136,26 +178,32 @@ func (p *Source) longpoll() (bool, error) {
 }
 
 func (p *Source) fetchChanges() error {
-	for {
-		arg := files.NewListFolderContinueArg(p.cursor)
-		resp, err := p.client.ListFolderContinue(arg)
-		if err != nil {
-			return err
+	return retry.Do(context.Background(), retry.Config{
+		MaxAttempts: 3,
+		BaseDelay:   1 * time.Second,
+		MaxDelay:    10 * time.Second,
+	}, func(attempt int) error {
+		for {
+			arg := files.NewListFolderContinueArg(p.cursor)
+			resp, err := p.client.ListFolderContinue(arg)
+			if err != nil {
+				return err
+			}
+
+			for _, entry := range resp.Entries {
+				p.handleEntry(entry)
+			}
+
+			p.cursor = resp.Cursor
+			_ = p.saveCursor(p.cursor)
+
+			if !resp.HasMore {
+				break
+			}
 		}
 
-		for _, entry := range resp.Entries {
-			p.handleEntry(entry)
-		}
-
-		p.cursor = resp.Cursor
-		_ = p.saveCursor(p.cursor)
-
-		if !resp.HasMore {
-			break
-		}
-	}
-
-	return nil
+		return nil
+	})
 }
 
 func (p *Source) handleEntry(entry files.IsMetadata) {

@@ -40,6 +40,15 @@ func normalizePath(p string) string {
 	return p
 }
 
+func isAuth(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	return strings.Contains(err.Error(), "expired_access_token") ||
+		strings.Contains(err.Error(), "invalid_access_token")
+}
+
 func isNotFound(err error) bool {
 	if apiErr, ok := errors.AsType[files.DeleteV2APIError](err); ok {
 		return apiErr.EndpointError != nil &&

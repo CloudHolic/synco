@@ -144,31 +144,47 @@ type gdriveFileEntry struct {
 
 func (s *Downloader) listAllFiles(parentID, prefix string) ([]gdriveFileEntry, error) {
 	q := fmt.Sprintf("'%s' in parents and trashed=false", parentID)
-	list, err := s.svc.Files.List().Q(q).Fields("files(id, name, mimeType)").Do()
-	if err != nil {
-		return nil, err
-	}
 
 	var entries []gdriveFileEntry
-	for _, f := range list.Files {
-		relPath := f.Name
-		if prefix != "" {
-			relPath = prefix + "/" + f.Name
+	pageToken := ""
+
+	for {
+		call := s.svc.Files.List().Q(q).Fields("nextPageToken, files(id, name, mimeType)")
+		if pageToken != "" {
+			call = call.PageToken(pageToken)
 		}
 
-		if f.MimeType == "application/vnd.google-apps.folder" {
-			sub, err := s.listAllFiles(f.Id, relPath)
-			if err != nil {
-				return nil, err
+		resp, err := call.Do()
+		if err != nil {
+			return nil, err
+		}
+
+		for _, f := range resp.Files {
+			relPath := f.Name
+			if prefix != "" {
+				relPath = prefix + "/" + f.Name
 			}
 
-			entries = append(entries, sub...)
-		} else {
-			entries = append(entries, gdriveFileEntry{
-				fileID:  f.Id,
-				relPath: relPath,
-			})
+			if f.MimeType == "application/vnd.google-apps.folder" {
+				sub, err := s.listAllFiles(f.Id, relPath)
+				if err != nil {
+					return nil, err
+				}
+
+				entries = append(entries, sub...)
+			} else {
+				entries = append(entries, gdriveFileEntry{
+					fileID:  f.Id,
+					relPath: relPath,
+				})
+			}
 		}
+
+		if resp.NextPageToken == "" {
+			break
+		}
+
+		pageToken = resp.NextPageToken
 	}
 
 	return entries, nil

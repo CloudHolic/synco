@@ -2,6 +2,7 @@ package tcp
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"synco/internal/logger"
 	"synco/internal/model"
+	"synco/internal/retry"
 	"synco/internal/syncer"
 	"time"
 
@@ -67,10 +69,35 @@ func (s *Syncer) handle(event model.FileEvent) model.SyncResult {
 		DstPath: s.addr,
 	}
 
+	err := retry.Do(context.Background(), retry.Default, func(attempt int) error {
+		if attempt > 1 {
+			logger.Log.Warn("tcp: retrying connection",
+				zap.String("addr", s.addr),
+				zap.Int("attempt", attempt))
+		}
+
+		return s.send(event)
+	})
+
+	if err != nil {
+		logger.Log.Warn("tcp: sync failed after retries",
+			zap.String("path", event.Path),
+			zap.Error(err))
+
+		result.Err = err
+	} else {
+		logger.Log.Info("tcp: synced",
+			zap.String("type", string(event.Type)),
+			zap.String("path", event.Path))
+	}
+
+	return result
+}
+
+func (s *Syncer) send(event model.FileEvent) error {
 	conn, err := net.DialTimeout("tcp", s.addr, 5*time.Second)
 	if err != nil {
-		result.Err = fmt.Errorf("failed to connect to %s: %w", s.addr, err)
-		return result
+		return fmt.Errorf("failed to connect to %s: %w", s.addr, err)
 	}
 
 	defer func(conn net.Conn) {
@@ -81,22 +108,12 @@ func (s *Syncer) handle(event model.FileEvent) model.SyncResult {
 
 	switch event.Type {
 	case model.EventCreate, model.EventWrite:
-		result.Err = s.sendFile(conn, reader, event.Path)
+		return s.sendFile(conn, reader, event.Path)
 	case model.EventRemove, model.EventRename:
-		result.Err = s.sendDelete(conn, reader, event.Path)
+		return s.sendDelete(conn, reader, event.Path)
 	}
 
-	if result.Err != nil {
-		logger.Log.Error("tcp sync failed",
-			zap.String("path", event.Path),
-			zap.Error(result.Err))
-	} else {
-		logger.Log.Info("tcp synced",
-			zap.String("type", string(event.Type)),
-			zap.String("path", event.Path))
-	}
-
-	return result
+	return nil
 }
 
 func (s *Syncer) sendFile(conn net.Conn, reader *bufio.Reader, path string) error {
