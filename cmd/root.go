@@ -15,6 +15,18 @@ var (
 	debug bool
 )
 
+var clientOnlyCmds = map[string]bool{
+	"synco status":       true,
+	"synco stop":         true,
+	"synco history":      true,
+	"synco auth gdrive":  true,
+	"synco auth dropbox": true,
+	"synco job list":     true,
+	"synco job pause":    true,
+	"synco job resume":   true,
+	"synco job remove":   true,
+}
+
 var rootCmd = &cobra.Command{
 	Use:   "synco",
 	Short: "A simple file sync tool",
@@ -31,11 +43,7 @@ var rootCmd = &cobra.Command{
 			return err
 		}
 
-		clientCmds := map[string]bool{
-			"status": true, "pause": true,
-			"resume": true, "stop": true, "history": true,
-		}
-		if !clientCmds[cmd.Name()] {
+		if !clientOnlyCmds[cmd.CommandPath()] {
 			if err := db.Init(cfg.DBPath); err != nil {
 				return err
 			}

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"synco/internal/daemon"
@@ -14,13 +15,20 @@ import (
 	"go.uber.org/zap"
 )
 
-var watchCmd = &cobra.Command{
-	Use:   "watch",
-	Short: "Start the daemon using all the stored jobs",
-	RunE:  runDaemon,
+var daemonCmd = &cobra.Command{
+	Use:   "daemon",
+	Short: "Manage the synco daemon process",
 }
 
-func runDaemon(cmd *cobra.Command, args []string) error {
+var daemonStartCmd = &cobra.Command{
+	Use:   "start",
+	Short: "Start the daemon (invoked by autostart or 'job add --foreground')",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runDaemonInProcess("", "")
+	},
+}
+
+func runDaemonInProcess(extraSrc, extraDst string) error {
 	defer logger.Sync()
 
 	jobRepo := repository.NewJobRepository()
@@ -36,14 +44,25 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	for _, job := range jobs {
 		if err := manager.StartJob(job); err != nil {
-			logger.Log.Warn("failed to start job",
+			logger.Log.Warn("failed to start stored job",
 				zap.Uint("id", job.ID),
 				zap.Error(err))
 		}
 	}
 
-	if len(jobs) == 0 {
-		logger.Log.Info("no jobs configured, use 'synco job add <src> <dst>' to add one")
+	if extraSrc != "" && extraDst != "" {
+		srcType := endpointType(extraSrc)
+		dstType := endpointType(extraDst)
+		job, err := jobRepo.Add(extraSrc, srcType, extraDst, dstType)
+		if err != nil {
+			return fmt.Errorf("failed to add job: %w", err)
+		}
+
+		if err := manager.StartJob(job); err != nil {
+			return fmt.Errorf("failed to start job: %w", err)
+		}
+
+		fmt.Printf("watching %s → %s  (Ctrl+C to stop)\n", extraSrc, extraDst)
 	}
 
 	srv := daemon.NewServer(manager, cfg.DaemonPort)
@@ -70,5 +89,6 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 }
 
 func init() {
-	rootCmd.AddCommand(watchCmd)
+	daemonCmd.AddCommand(daemonStartCmd)
+	rootCmd.AddCommand(daemonCmd)
 }

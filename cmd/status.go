@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"synco/internal/daemon"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -25,35 +24,89 @@ var statusCmd = &cobra.Command{
 		}(resp.Body)
 
 		var result struct {
-			Jobs []daemon.JobSnapshot `json:"jobs"`
+			Daemon struct {
+				PID       int       `json:"pid"`
+				StartedAt time.Time `json:"started_at"`
+			} `json:"daemon"`
+			Jobs []struct {
+				JobID     uint       `json:"job_id"`
+				Src       string     `json:"src"`
+				Dst       string     `json:"dst"`
+				Status    string     `json:"status"`
+				Synced    int        `json:"synced"`
+				Failed    int        `json:"failed"`
+				LastSync  *time.Time `json:"last_sync"`
+				StartedAt time.Time  `json:"started_at"`
+			} `json:"jobs"`
 		}
 
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			return fmt.Errorf("failed to decode status response: %w", err)
+			return fmt.Errorf("failed to decode response: %w", err)
 		}
 
+		uptime := time.Since(result.Daemon.StartedAt).Round(time.Second)
+		fmt.Printf("● synco daemon  running  (pid %d, uptime %s)\n\n",
+			result.Daemon.PID, formatDuration(uptime))
+
 		if len(result.Jobs) == 0 {
-			fmt.Println("no active jobs")
+			fmt.Println("  no active jobs — use 'synco job add <src> <dst>'")
 			return nil
 		}
 
-		fmt.Printf("%-6s %-10s %-30s %-30s %-8s %-8s %s\n",
-			"JOB", "STATUS", "SRC", "DST", "SYNCED", "FAILED", "LAST SYNC")
+		fmt.Printf("%-4s %-8s %-28s %-28s %-8s %-8s %s\n",
+			"ID", "STATUS", "SRC", "DST", "SYNCED", "FAILED", "LAST SYNC")
 
-		for _, snap := range result.Jobs {
+		for _, j := range result.Jobs {
 			lastSync := "-"
-			if snap.LastSync != nil {
-				lastSync = snap.LastSync.Format("2006-01-02 15:04:05")
+			if j.LastSync != nil {
+				lastSync = formatAgo(*j.LastSync)
 			}
 
-			uptime := time.Since(snap.StartedAt).Round(time.Second)
-			fmt.Printf("%-6d %-10s %-30s %-30s %-8d %-8d %s\n",
-				snap.JobID, snap.Status, snap.Src, snap.Dst, snap.Synced, snap.Failed, lastSync)
+			fmt.Printf("%-4d %-8s %-28s %-28s %-8d %-8d %s\n",
+				j.JobID, j.Status, truncate(j.Src, 28), truncate(j.Dst, 28), j.Synced, j.Failed, lastSync)
 			fmt.Printf("       uptime: %s\n", uptime)
 		}
 
 		return nil
 	},
+}
+
+func formatDuration(d time.Duration) string {
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+
+	if h > 0 {
+		return fmt.Sprintf("%dh %dm", h, m)
+	}
+
+	if m > 0 {
+		return fmt.Sprintf("%dm %ds", m, s)
+	}
+
+	return fmt.Sprintf("%ds", s)
+}
+
+func formatAgo(t time.Time) string {
+	d := time.Since(t).Round(time.Second)
+
+	if d < time.Minute {
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	}
+
+	if d < time.Hour {
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	}
+
+	return fmt.Sprintf("%dh ago", int(d.Hours()))
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+
+	return "…" + s[len(s)-(max-1):]
 }
 
 func init() {

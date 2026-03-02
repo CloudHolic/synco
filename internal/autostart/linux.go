@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"text/template"
 )
 
@@ -37,7 +38,7 @@ func (l *LinuxAutoStarter) servicePath() (string, error) {
 	return filepath.Join(dir, "synco.service"), nil
 }
 
-func (l *LinuxAutoStarter) Install(execPath string) error {
+func (l *LinuxAutoStarter) Install(execPath string, args []string) error {
 	path, err := l.servicePath()
 	if err != nil {
 		return err
@@ -52,8 +53,10 @@ func (l *LinuxAutoStarter) Install(execPath string) error {
 		_ = f.Close()
 	}(f)
 
+	command := fmt.Sprintf(`"%s" %s`, execPath, strings.Join(args, " "))
+
 	tmpl := template.Must(template.New("service").Parse(serviceTemplate))
-	if err := tmpl.Execute(f, map[string]string{"ExecPath": execPath}); err != nil {
+	if err := tmpl.Execute(f, map[string]string{"Command": command}); err != nil {
 		return fmt.Errorf("failed to write service file: %w", err)
 	}
 

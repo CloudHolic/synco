@@ -10,13 +10,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var historyN int
+var (
+	historyN     int
+	historyJobID uint
+)
 
 var historyCmd = &cobra.Command{
 	Use:   "history",
 	Short: "View synco history",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		url := fmt.Sprintf("%s?n=%d", daemonURL("/history"), historyN)
+		if historyJobID > 0 {
+			url += fmt.Sprintf("&job_id=%d", historyJobID)
+		}
+
 		resp, err := http.Get(url)
 		if err != nil {
 			return fmt.Errorf("daemon not running: %w", err)
@@ -38,15 +45,16 @@ var historyCmd = &cobra.Command{
 
 		for _, h := range histories {
 			status := "✓"
-			if h.EventType == "FAILED" {
+			if h.EventType == model.StatusFailed {
 				status = "✗"
 			}
 
-			fmt.Printf("%s [%s] %-7s %s\n",
+			fmt.Printf("%s [%s] %-7s %s → %s\n",
 				status,
 				h.SyncedAt.Format("2006-01-02 15:04:05"),
 				h.FileEvent,
 				h.SrcPath,
+				h.DstPath,
 			)
 		}
 
@@ -56,5 +64,6 @@ var historyCmd = &cobra.Command{
 
 func init() {
 	historyCmd.Flags().IntVar(&historyN, "n", 20, "number of history entries to show")
+	historyCmd.Flags().UintVar(&historyJobID, "job", 0, "filter by job ID")
 	rootCmd.AddCommand(historyCmd)
 }

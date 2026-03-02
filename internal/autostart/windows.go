@@ -3,16 +3,18 @@ package autostart
 import (
 	"fmt"
 	"os/exec"
+	"strings"
 )
 
 const taskName = "SyncoDaemon"
 
 type WindowsAutoStarter struct{}
 
-func (w *WindowsAutoStarter) Install(execPath string) error {
+func (w *WindowsAutoStarter) Install(execPath string, args []string) error {
+	tr := fmt.Sprintf(`"%s" %s`, execPath, strings.Join(args, " "))
 	cmd := exec.Command("schtasks", "/create",
 		"/TN", taskName,
-		"/TR", fmt.Sprintf(`"%s" watch`, execPath),
+		"/TR", tr,
 		"/SC", "ONLOGON",
 		"/RL", "HIGHEST",
 		"/F")

@@ -15,6 +15,7 @@ const (
 
 type History struct {
 	gorm.Model
+	JobID     uint       `gorm:"index"`
 	EventType SyncStatus `gorm:"not null"`
 	SrcPath   string     `gorm:"not null"`
 	DstPath   string     `gorm:"not null"`

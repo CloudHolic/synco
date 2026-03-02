@@ -3,7 +3,7 @@ package autostart
 import "runtime"
 
 type AutoStarter interface {
-	Install(execPath string) error
+	Install(execPath string, args []string) error
 	Uninstall() error
 	IsInstalled() (bool, error)
 }
@@ -21,7 +21,7 @@ func New() AutoStarter {
 
 type UnsupportedAutoStarter struct{}
 
-func (u *UnsupportedAutoStarter) Install(_ string) error {
+func (u *UnsupportedAutoStarter) Install(_ string, _ []string) error {
 	return nil
 }
 

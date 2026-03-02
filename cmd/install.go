@@ -10,7 +10,7 @@ import (
 
 var installCmd = &cobra.Command{
 	Use:   "install",
-	Short: "Register as service on boot",
+	Short: "Register synco daemon for autostart on login",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		execPath, err := os.Executable()
 		if err != nil {
@@ -18,7 +18,7 @@ var installCmd = &cobra.Command{
 		}
 
 		as := autostart.New()
-		if err := as.Install(execPath); err != nil {
+		if err := as.Install(execPath, []string{"daemon", "start"}); err != nil {
 			return err
 		}
 

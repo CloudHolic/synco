@@ -12,7 +12,7 @@ func NewHistoryRepository() *HistoryRepository {
 	return &HistoryRepository{}
 }
 
-func (r *HistoryRepository) Save(result model.SyncResult) error {
+func (r *HistoryRepository) Save(result model.SyncResult, jobID uint) error {
 	status := model.StatusSuccess
 	errMsg := ""
 	if result.Err != nil {
@@ -21,6 +21,7 @@ func (r *HistoryRepository) Save(result model.SyncResult) error {
 	}
 
 	history := model.History{
+		JobID:     jobID,
 		EventType: status,
 		SrcPath:   result.SrcPath,
 		DstPath:   result.DstPath,
@@ -54,14 +55,14 @@ func (r *HistoryRepository) GetStats() (Stats, error) {
 	return stats, nil
 }
 
-func (r *HistoryRepository) GetRecent(limit int) ([]model.History, error) {
-	var histories []model.History
-	result := db.DB.
-		Order("synced_at desc").
-		Limit(limit).
-		Find(&histories)
+func (r *HistoryRepository) GetRecent(n int, jobID uint) ([]model.History, error) {
+	q := db.DB.Order("synced_at desc").Limit(n)
+	if jobID > 0 {
+		q = q.Where("job_id = ?", jobID)
+	}
 
-	return histories, result.Error
+	var histories []model.History
+	return histories, q.Find(&histories).Error
 }
 
 func (r *HistoryRepository) GetFailed() ([]model.History, error) {

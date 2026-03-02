@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"strconv"
 	"synco/internal/logger"
 	"synco/internal/model"
 	"synco/internal/repository"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -15,12 +17,13 @@ import (
 )
 
 type Server struct {
-	echo     *echo.Echo
-	manager  *JobManager
-	jobRepo  *repository.JobRepository
-	histRepo *repository.HistoryRepository
-	port     int
-	stopCh   chan struct{}
+	echo      *echo.Echo
+	manager   *JobManager
+	jobRepo   *repository.JobRepository
+	histRepo  *repository.HistoryRepository
+	port      int
+	stopCh    chan struct{}
+	startedAt time.Time
 }
 
 func NewServer(manager *JobManager, port int) *Server {
@@ -29,12 +32,13 @@ func NewServer(manager *JobManager, port int) *Server {
 	e.Use(middleware.Recover())
 
 	s := &Server{
-		echo:     e,
-		manager:  manager,
-		jobRepo:  repository.NewJobRepository(),
-		histRepo: repository.NewHistoryRepository(),
-		port:     port,
-		stopCh:   make(chan struct{}, 1),
+		echo:      e,
+		manager:   manager,
+		jobRepo:   repository.NewJobRepository(),
+		histRepo:  repository.NewHistoryRepository(),
+		port:      port,
+		stopCh:    make(chan struct{}, 1),
+		startedAt: time.Now(),
 	}
 	s.registerRoutes()
 	return s
@@ -81,6 +85,10 @@ func (s *Server) StopCh() <-chan struct{} {
 
 func (s *Server) handleStatus(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{
+		"daemon": map[string]any{
+			"pid":        os.Getpid(),
+			"started_at": s.startedAt,
+		},
 		"jobs": s.manager.Snapshots(),
 	})
 }
@@ -96,7 +104,7 @@ func (s *Server) handleListJobs(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	snaps := make(map[uint]JobSnapshot)
+	snaps := make(map[uint]model.JobSnapshot)
 	for _, snap := range s.manager.Snapshots() {
 		snaps[snap.JobID] = snap
 	}
@@ -221,7 +229,14 @@ func (s *Server) handleHistory(c echo.Context) error {
 		}
 	}
 
-	histories, err := s.histRepo.GetRecent(n)
+	var jobID uint
+	if jStr := c.QueryParam("job_id"); jStr != "" {
+		if parsed, err := strconv.ParseUint(jStr, 10, 64); err == nil {
+			jobID = uint(parsed)
+		}
+	}
+
+	histories, err := s.histRepo.GetRecent(n, jobID)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}

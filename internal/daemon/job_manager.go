@@ -247,7 +247,7 @@ func (m *JobManager) runPipeline(state *JobState, src syncer.EventSource, s sync
 				continue
 			}
 
-			if err := m.repo.Save(result); err != nil {
+			if err := m.repo.Save(result, state.JobID); err != nil {
 				logger.Log.Warn("failed to save history",
 					zap.Error(err))
 			}
@@ -328,11 +328,11 @@ func (m *JobManager) ResumeJob(id uint) error {
 	return nil
 }
 
-func (m *JobManager) Snapshots() []JobSnapshot {
+func (m *JobManager) Snapshots() []model.JobSnapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	snaps := make([]JobSnapshot, 0, len(m.jobs))
+	snaps := make([]model.JobSnapshot, 0, len(m.jobs))
 	for _, state := range m.jobs {
 		snaps = append(snaps, state.Snapshot())
 	}
