@@ -65,7 +65,7 @@ func (s *Downloader) FullSync() ([]model.SyncResult, error) {
 				continue
 			}
 
-			relPath := s.toRelPath(f.PathDisplay)
+			relPath := toRelPath(f.PathDisplay)
 			if relPath == "" {
 				continue
 			}

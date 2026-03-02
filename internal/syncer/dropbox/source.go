@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"synco/internal/auth"
 	"synco/internal/logger"
 	"synco/internal/model"
@@ -164,7 +163,7 @@ func (p *Source) handleEntry(entry files.IsMetadata) {
 
 	switch e := entry.(type) {
 	case *files.FileMetadata:
-		relPath := p.toRelPath(e.PathDisplay)
+		relPath := toRelPath(e.PathDisplay)
 		if relPath == "" {
 			return
 		}
@@ -176,7 +175,7 @@ func (p *Source) handleEntry(entry files.IsMetadata) {
 		}
 
 	case *files.DeletedMetadata:
-		relPath := p.toRelPath(e.PathDisplay)
+		relPath := toRelPath(e.PathDisplay)
 		if relPath == "" {
 			return
 		}
@@ -194,18 +193,6 @@ func (p *Source) handleEntry(entry files.IsMetadata) {
 	case p.eventCh <- event:
 	case <-p.stopCh:
 	}
-}
-
-func (p *Source) toRelPath(dropboxPath string) string {
-	prefix := strings.ToLower(p.folderPath)
-	lower := strings.ToLower(dropboxPath)
-
-	if !strings.HasPrefix(lower, prefix) {
-		return ""
-	}
-
-	rel := dropboxPath[len(p.folderPath):]
-	return strings.TrimPrefix(rel, "/")
 }
 
 func (p *Source) getLatestCursor() (string, error) {

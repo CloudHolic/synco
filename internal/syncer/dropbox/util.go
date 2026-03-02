@@ -8,6 +8,18 @@ import (
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/files"
 )
 
+func toRelPath(dropboxPath string) string {
+	prefix := strings.ToLower(p.folderPath)
+	lower := strings.ToLower(dropboxPath)
+
+	if !strings.HasPrefix(lower, prefix) {
+		return ""
+	}
+
+	rel := dropboxPath[len(p.folderPath):]
+	return strings.TrimPrefix(rel, "/")
+}
+
 func ensureFolder(client files.Client, path string) error {
 	arg := files.NewCreateFolderArg(path)
 	arg.Autorename = false
