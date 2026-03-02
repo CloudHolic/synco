@@ -12,6 +12,7 @@ type EventSource interface {
 
 type Syncer interface {
 	Run(inCh <-chan model.FileEvent) <-chan model.SyncResult
+	FullSync() ([]model.SyncResult, error)
 }
 
 func RunLoop(inCh <-chan model.FileEvent, handle func(model.FileEvent) model.SyncResult) <-chan model.SyncResult {

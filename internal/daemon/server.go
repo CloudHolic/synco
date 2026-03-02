@@ -137,6 +137,8 @@ func (s *Server) handleAddJob(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
+	go s.manager.RunInitialSync(job)
+
 	return c.JSON(http.StatusCreated, job)
 }
 

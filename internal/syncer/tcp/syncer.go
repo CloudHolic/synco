@@ -9,6 +9,7 @@ import (
 	"strings"
 	"synco/internal/logger"
 	"synco/internal/model"
+	"synco/internal/syncer"
 	"time"
 
 	"go.uber.org/zap"
@@ -36,29 +37,27 @@ func NewSyncer(src, addr, nodeID string, vc *Vclock) (*Syncer, error) {
 }
 
 func (s *Syncer) Run(inCh <-chan model.FileEvent) <-chan model.SyncResult {
-	outCh := make(chan model.SyncResult, cap(inCh))
+	return syncer.RunLoop(inCh, s.handle)
+}
 
-	go func() {
-		defer close(outCh)
+func (s *Syncer) FullSync() ([]model.SyncResult, error) {
+	var results []model.SyncResult
 
-		for event := range inCh {
-			result := s.handle(event)
-
-			if result.Err != nil {
-				logger.Log.Error("remote sync failed",
-					zap.String("path", event.Path),
-					zap.Error(result.Err))
-			} else {
-				logger.Log.Info("remote synced",
-					zap.String("type", string(event.Type)),
-					zap.String("path", event.Path))
-			}
-
-			outCh <- result
+	err := filepath.WalkDir(s.src, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
 		}
-	}()
 
-	return outCh
+		results = append(results, s.handle(model.FileEvent{
+			Type:      model.EventWrite,
+			Path:      path,
+			Timestamp: time.Now(),
+		}))
+
+		return nil
+	})
+
+	return results, err
 }
 
 func (s *Syncer) handle(event model.FileEvent) model.SyncResult {
@@ -85,6 +84,16 @@ func (s *Syncer) handle(event model.FileEvent) model.SyncResult {
 		result.Err = s.sendFile(conn, reader, event.Path)
 	case model.EventRemove, model.EventRename:
 		result.Err = s.sendDelete(conn, reader, event.Path)
+	}
+
+	if result.Err != nil {
+		logger.Log.Error("tcp sync failed",
+			zap.String("path", event.Path),
+			zap.Error(result.Err))
+	} else {
+		logger.Log.Info("tcp synced",
+			zap.String("type", string(event.Type)),
+			zap.String("path", event.Path))
 	}
 
 	return result

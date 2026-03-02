@@ -48,6 +48,56 @@ func (s *Downloader) Run(inCh <-chan model.FileEvent) <-chan model.SyncResult {
 	return syncer.RunLoop(inCh, s.handle)
 }
 
+func (s *Downloader) FullSync() ([]model.SyncResult, error) {
+	arg := files.NewListFolderArg(s.folderPath)
+	arg.Recursive = true
+
+	resp, err := s.client.ListFolder(arg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list dropbox folder: %w", err)
+	}
+
+	var results []model.SyncResult
+	for {
+		for _, entry := range resp.Entries {
+			f, ok := entry.(*files.FileMetadata)
+			if !ok {
+				continue
+			}
+
+			relPath := s.toRelPath(f.PathDisplay)
+			if relPath == "" {
+				continue
+			}
+
+			localPath := filepath.Join(s.dst, filepath.FromSlash(relPath))
+			result := model.SyncResult{
+				SrcPath: "dropbox:" + relPath,
+				DstPath: localPath,
+			}
+			result.Err = s.downloadFile(relPath, localPath)
+			results = append(results, result)
+		}
+
+		if !resp.HasMore {
+			break
+		}
+
+		cont, err := s.client.ListFolderContinue(files.NewListFolderContinueArg(resp.Cursor))
+		if err != nil {
+			return results, fmt.Errorf("failed to continue listing: %w", err)
+		}
+
+		resp = &files.ListFolderResult{
+			Entries: cont.Entries,
+			Cursor:  cont.Cursor,
+			HasMore: cont.HasMore,
+		}
+	}
+
+	return results, nil
+}
+
 func (s *Downloader) handle(event model.FileEvent) model.SyncResult {
 	localPath := filepath.Join(s.dst, filepath.FromSlash(event.Path))
 	result := model.SyncResult{

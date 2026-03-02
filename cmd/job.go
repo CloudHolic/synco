@@ -6,14 +6,15 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"synco/internal/logger"
 	"synco/internal/model"
 	"synco/internal/repository"
+	"synco/internal/syncer"
+	"synco/internal/syncer/dropbox"
+	"synco/internal/syncer/gdrive"
 	"synco/internal/syncer/local"
 	"synco/internal/syncer/tcp"
-	"time"
 
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -96,40 +97,28 @@ Flags:
 
 		switch {
 		case jobAddOnce:
-			return runOnceSync(src, dst)
+			return runSyncOnce(src, dst)
 		case jobAddForeground:
 			return runForegroundDaemon(src, dst)
 		default:
-			return addJobWithAutoDaemon(src, dst)
+			return addJob(src, dst)
 		}
 	},
 }
 
-func addJobWithAutoDaemon(src, dst string) error {
+func addJob(src, dst string) error {
 	if !isDaemonRunning() {
-		fmt.Println("daemon not running, starting in background...")
-		if err := startDaemonBackground(); err != nil {
-			return fmt.Errorf("failed to start daemon: %w", err)
-		}
-
-		if err := waitForDaemon(5 * time.Second); err != nil {
-			return fmt.Errorf("daemon did not start in time: %w", err)
-		}
+		_, _ = fmt.Fprintln(os.Stderr, "synco daemon is not running")
+		_, _ = fmt.Fprintln(os.Stderr, "  start on login (recommended):  synco install")
+		_, _ = fmt.Fprintln(os.Stderr, "  start manually this session:   synco daemon start")
+		return fmt.Errorf("daemon not running")
 	}
 
 	return postJob(src, dst)
 }
 
-func runOnceSync(src, dst string) error {
-	if endpointType(src) != model.EndpointLocal {
-		return fmt.Errorf("--once only supports local sources")
-	}
-
-	if endpointType(dst) != model.EndpointLocal {
-		return fmt.Errorf("--once only supports local destinations")
-	}
-
-	s, err := local.NewSyncer(src, dst, cfg.ConflictStrategy)
+func runSyncOnce(src, dst string) error {
+	s, err := buildFullSyncer(src, dst)
 	if err != nil {
 		return err
 	}
@@ -146,7 +135,7 @@ func runOnceSync(src, dst string) error {
 	repo := repository.NewHistoryRepository()
 	var synced, failed int
 	for _, r := range results {
-		_ = repo.Save(r)
+		_ = repo.Save(r, 0)
 		if r.Err != nil {
 			failed++
 			fmt.Printf("  ✗ %s: %v\n", r.SrcPath, r.Err)
@@ -166,6 +155,43 @@ func runForegroundDaemon(src, dst string) error {
 	}
 
 	return runDaemonInProcess(src, dst)
+}
+
+func buildFullSyncer(src, dst string) (syncer.Syncer, error) {
+	srcType := endpointType(src)
+	dstType := endpointType(dst)
+
+	nodeID, err := model.LoadOrCreateNodeID()
+	if err != nil {
+		return nil, err
+	}
+
+	switch {
+	case srcType == model.EndpointLocal && dstType == model.EndpointLocal:
+		return local.NewSyncer(src, dst, cfg.ConflictStrategy)
+
+	case srcType == model.EndpointLocal && dstType == model.EndpointRemoteTCP:
+		return tcp.NewSyncer(src, dst, nodeID, tcp.NewVclock())
+
+	case srcType == model.EndpointLocal && dstType == model.EndpointGDrive:
+		path := strings.TrimPrefix(dst, "gdrive:")
+		return gdrive.NewUploader(src, path)
+
+	case srcType == model.EndpointLocal && dstType == model.EndpointDropbox:
+		path := strings.TrimPrefix(dst, "dropbox:")
+		return dropbox.NewUploader(src, path)
+
+	case srcType == model.EndpointGDrive && dstType == model.EndpointLocal:
+		path := strings.TrimPrefix(src, "gdrive:")
+		return gdrive.NewDownloader(path, dst)
+
+	case srcType == model.EndpointDropbox && dstType == model.EndpointLocal:
+		path := strings.TrimPrefix(src, "dropbox:")
+		return dropbox.NewDownloader(path, dst)
+
+	default:
+		return nil, fmt.Errorf("--once does not support %s → %s", srcType, dstType)
+	}
 }
 
 // ── job remove / pause / resume ───────────────────────────────────────────────
@@ -237,32 +263,6 @@ func isDaemonRunning() bool {
 	}
 	_ = resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
-}
-
-func startDaemonBackground() error {
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-
-	cmd := exec.Command(exe, "daemon", "start")
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	cmd.Stdin = nil
-	return cmd.Start()
-}
-
-func waitForDaemon(timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if isDaemonRunning() {
-			return nil
-		}
-
-		time.Sleep(200 * time.Millisecond)
-	}
-
-	return fmt.Errorf("timed out after %s", timeout)
 }
 
 func postJob(src, dst string) error {

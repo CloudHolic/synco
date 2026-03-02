@@ -47,6 +47,33 @@ func NewJobManager(cfg *config.Config) (*JobManager, error) {
 	}, nil
 }
 
+func (m *JobManager) RunInitialSync(job model.Job) {
+	s, err := m.newSyncer(job)
+	if err != nil {
+		logger.Log.Warn("initial sync: failed to create syncer",
+			zap.Error(err))
+	}
+
+	logger.Log.Info("initial full sync started",
+		zap.Uint("job", job.ID))
+
+	results, err := s.FullSync()
+	if err != nil {
+		logger.Log.Warn("initial full sync failed",
+			zap.Uint("job", job.ID),
+			zap.Error(err))
+		return
+	}
+
+	for _, r := range results {
+		_ = m.repo.Save(r, job.ID)
+	}
+
+	logger.Log.Info("initial full sync done",
+		zap.Uint("job", job.ID),
+		zap.Int("results", len(results)))
+}
+
 func (m *JobManager) StartJob(job model.Job) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

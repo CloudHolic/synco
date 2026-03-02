@@ -58,6 +58,26 @@ func (s *Downloader) Run(inCh <-chan model.FileEvent) <-chan model.SyncResult {
 	return syncer.RunLoop(inCh, s.handle)
 }
 
+func (s *Downloader) FullSync() ([]model.SyncResult, error) {
+	files, err := s.listAllFiles(s.folderID, "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to list gdrive files: %w", err)
+	}
+
+	var results []model.SyncResult
+	for _, f := range files {
+		localPath := filepath.Join(s.dst, filepath.FromSlash(f.relPath))
+		result := model.SyncResult{
+			SrcPath: "gdrive:" + f.relPath,
+			DstPath: localPath,
+		}
+		result.Err = s.downloadFile(f.relPath, localPath)
+		results = append(results, result)
+	}
+
+	return results, nil
+}
+
 func (s *Downloader) handle(event model.FileEvent) model.SyncResult {
 	localPath := filepath.Join(s.dst, filepath.FromSlash(event.Path))
 	result := model.SyncResult{
@@ -115,4 +135,41 @@ func (s *Downloader) downloadFile(relPath, localPath string) error {
 	}(resp.Body)
 
 	return util.AtomicWrite(localPath, resp.Body)
+}
+
+type gdriveFileEntry struct {
+	fileID  string
+	relPath string
+}
+
+func (s *Downloader) listAllFiles(parentID, prefix string) ([]gdriveFileEntry, error) {
+	q := fmt.Sprintf("'%s' in parents and trashed=false", parentID)
+	list, err := s.svc.Files.List().Q(q).Fields("files(id, name, mimeType)").Do()
+	if err != nil {
+		return nil, err
+	}
+
+	var entries []gdriveFileEntry
+	for _, f := range list.Files {
+		relPath := f.Name
+		if prefix != "" {
+			relPath = prefix + "/" + f.Name
+		}
+
+		if f.MimeType == "application/vnd.google-apps.folder" {
+			sub, err := s.listAllFiles(f.Id, relPath)
+			if err != nil {
+				return nil, err
+			}
+
+			entries = append(entries, sub...)
+		} else {
+			entries = append(entries, gdriveFileEntry{
+				fileID:  f.Id,
+				relPath: relPath,
+			})
+		}
+	}
+
+	return entries, nil
 }

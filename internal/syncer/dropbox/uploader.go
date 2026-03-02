@@ -2,12 +2,14 @@ package dropbox
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"synco/internal/auth"
 	"synco/internal/logger"
 	"synco/internal/model"
 	"synco/internal/syncer"
+	"time"
 
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox"
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/files"
@@ -49,6 +51,26 @@ func NewUploader(src, folderPath string) (*Uploader, error) {
 
 func (s *Uploader) Run(inCh <-chan model.FileEvent) <-chan model.SyncResult {
 	return syncer.RunLoop(inCh, s.handle)
+}
+
+func (s *Uploader) FullSync() ([]model.SyncResult, error) {
+	var results []model.SyncResult
+
+	err := filepath.WalkDir(s.src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+
+		results = append(results, s.handle(model.FileEvent{
+			Type:      model.EventWrite,
+			Path:      path,
+			Timestamp: time.Now(),
+		}))
+
+		return nil
+	})
+
+	return results, err
 }
 
 func (s *Uploader) handle(event model.FileEvent) model.SyncResult {
