@@ -40,7 +40,7 @@ func Do(ctx context.Context, cfg Config, fn func(attempt int) error) error {
 			return err
 		}
 
-		delay := backoff(cfg.BaseDelay, cfg.MaxDelay, attempt)
+		delay := Backoff(cfg.BaseDelay, cfg.MaxDelay, attempt)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -49,8 +49,8 @@ func Do(ctx context.Context, cfg Config, fn func(attempt int) error) error {
 	}
 }
 
-// backoff 2^attempt * BaseDelay의 지수 백오프에 ±25% jitter 적용
-func backoff(base, max time.Duration, attempt int) time.Duration {
+// Backoff 2^attempt * BaseDelay의 지수 백오프에 ±25% jitter 적용
+func Backoff(base, max time.Duration, attempt int) time.Duration {
 	shift := attempt - 1
 	if shift > 10 {
 		shift = 10

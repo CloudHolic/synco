@@ -11,12 +11,16 @@ import (
 	"synco/internal/auth"
 	"synco/internal/logger"
 	"synco/internal/model"
+	"synco/internal/retry"
 	"synco/internal/syncer"
 	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/api/drive/v3"
+	"google.golang.org/api/googleapi"
 )
+
+const chunkSize = 8 * 1024 * 1024 // 5MB
 
 type Uploader struct {
 	mu         sync.RWMutex
@@ -118,44 +122,50 @@ func (s *Uploader) uploadFile(localPath string) error {
 		return fmt.Errorf("failed to create parent folders: %w", err)
 	}
 
-	f, err := os.Open(localPath)
-	if err != nil {
-		return fmt.Errorf("failed to open file: %w", err)
-	}
-
-	defer func(f *os.File) {
-		_ = f.Close()
-	}(f)
-
 	fileName := filepath.Base(localPath)
-
 	existingID := s.getCachedID(relPath)
 	if existingID == "" {
 		existingID, _ = s.findFile(fileName, parentID)
 	}
 
-	if existingID != "" {
-		_, err = s.svc.Files.Update(existingID, &drive.File{}).Media(f).Do()
+	return retry.Do(context.Background(), retry.Config{
+		MaxAttempts: 3,
+		BaseDelay:   2 * time.Second,
+		MaxDelay:    30 * time.Second,
+	}, func(attempt int) error {
+		f, err := os.Open(localPath)
 		if err != nil {
-			return fmt.Errorf("failed to update file: %w", err)
+			return fmt.Errorf("failed to open file: %w", err)
 		}
 
-		s.setCachedID(relPath, existingID)
-	} else {
-		driveFile := &drive.File{
-			Name:    fileName,
-			Parents: []string{parentID},
+		defer func(f *os.File) {
+			_ = f.Close()
+		}(f)
+
+		if existingID != "" {
+			_, err = s.svc.Files.Update(existingID, &drive.File{}).
+				Media(f, googleapi.ChunkSize(chunkSize)).
+				Do()
+			if err != nil {
+				return fmt.Errorf("resumable update failed: %w", err)
+			}
+
+			s.setCachedID(relPath, existingID)
+		} else {
+			created, err := s.svc.Files.Create(&drive.File{
+				Name:    fileName,
+				Parents: []string{parentID},
+			}).Media(f, googleapi.ChunkSize(chunkSize)).
+				Fields("id").Do()
+			if err != nil {
+				return fmt.Errorf("resumable create failed: %w", err)
+			}
+			s.setCachedID(relPath, created.Id)
+			existingID = created.Id
 		}
 
-		created, err := s.svc.Files.Create(driveFile).Media(f).Fields("id").Do()
-		if err != nil {
-			return fmt.Errorf("failed to create file: %w", err)
-		}
-
-		s.setCachedID(relPath, created.Id)
-	}
-
-	return nil
+		return nil
+	})
 }
 
 func (s *Uploader) deleteFile(localPath string) error {

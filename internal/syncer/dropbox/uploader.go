@@ -2,18 +2,25 @@ package dropbox
 
 import (
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"synco/internal/auth"
 	"synco/internal/logger"
 	"synco/internal/model"
+	"synco/internal/retry"
 	"synco/internal/syncer"
 	"time"
 
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox"
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/files"
 	"go.uber.org/zap"
+)
+
+const (
+	sessionThreshold = 150 * 1024 * 1024 // 150MB
+	chunkSize        = 100 * 1024 * 1024 // 100MB
 )
 
 type Uploader struct {
@@ -101,8 +108,20 @@ func (s *Uploader) handle(event model.FileEvent) model.SyncResult {
 }
 
 func (s *Uploader) uploadFile(localPath string) error {
-	relPath := s.relPath(localPath)
-	dropboxPath := s.folderPath + "/" + relPath
+	info, err := os.Stat(localPath)
+	if err != nil {
+		return fmt.Errorf("failed to stat file: %w", err)
+	}
+
+	if info.Size() < sessionThreshold {
+		return s.uploadSmallFile(localPath)
+	}
+
+	return s.uploadLargeFile(localPath, info.Size())
+}
+
+func (s *Uploader) uploadSmallFile(localPath string) error {
+	dropboxPath := s.folderPath + "/" + s.relPath(localPath)
 
 	f, err := os.Open(localPath)
 	if err != nil {
@@ -120,6 +139,95 @@ func (s *Uploader) uploadFile(localPath string) error {
 	if _, err := s.client.Upload(arg, f); err != nil {
 		return fmt.Errorf("failed to upload to dropbox: %w", err)
 	}
+
+	return nil
+}
+
+func (s *Uploader) uploadLargeFile(localPath string, totalSize int64) error {
+	dropboxPath := s.folderPath + "/" + s.relPath(localPath)
+
+	logger.Log.Info("starting upload session",
+		zap.String("file", filepath.Base(localPath)),
+		zap.Int64("size_mb", totalSize/1024/1024))
+
+	f, err := os.Open(localPath)
+	if err != nil {
+		return fmt.Errorf("failed to open file: %w", err)
+	}
+
+	defer func(f *os.File) {
+		_ = f.Close()
+	}(f)
+
+	firstChunk := io.LimitReader(f, chunkSize)
+	startArg := files.NewUploadSessionStartArg()
+	startArg.Close = false
+
+	session, err := s.client.UploadSessionStart(startArg, firstChunk)
+	if err != nil {
+		return fmt.Errorf("failed to start upload session: %w", err)
+	}
+
+	sessionID := session.SessionId
+	offset := uint64(chunkSize)
+	remaining := totalSize - chunkSize
+
+	for remaining > chunkSize {
+		chunk := io.LimitReader(f, chunkSize)
+		cursor := files.NewUploadSessionCursor(sessionID, offset)
+		appendArg := files.NewUploadSessionAppendArg(cursor)
+		appendArg.Close = false
+
+		if err := retry.Do(nil, retry.Config{
+			MaxAttempts: 3,
+			BaseDelay:   2 * time.Second,
+			MaxDelay:    30 * time.Second,
+		}, func(attempt int) error {
+			if attempt > 1 {
+				// 실패시 다시 읽어서 제공해야 함
+				if _, err := f.Seek(int64(offset), io.SeekStart); err != nil {
+					return fmt.Errorf("failed to seek: %w", err)
+				}
+				chunk = io.LimitReader(f, chunkSize)
+			}
+
+			return s.client.UploadSessionAppendV2(appendArg, chunk)
+		}); err != nil {
+			return fmt.Errorf("failed to append chunk at offset %d: %w", offset, err)
+		}
+
+		offset += uint64(chunkSize)
+		remaining -= chunkSize
+	}
+
+	lastChunk := io.LimitReader(f, remaining)
+	cursor := files.NewUploadSessionCursor(sessionID, offset)
+	commitInfo := files.NewCommitInfo(dropboxPath)
+	commitInfo.Mode = &files.WriteMode{Tagged: dropbox.Tagged{Tag: "overwrite"}}
+	commitInfo.Autorename = false
+	finishArg := files.NewUploadSessionFinishArg(cursor, commitInfo)
+
+	if err := retry.Do(nil, retry.Config{
+		MaxAttempts: 3,
+		BaseDelay:   2 * time.Second,
+		MaxDelay:    30 * time.Second,
+	}, func(attempt int) error {
+		if attempt > 1 {
+			if _, err := f.Seek(int64(offset), io.SeekStart); err != nil {
+				return fmt.Errorf("failed to seek: %w", err)
+			}
+
+			lastChunk = io.LimitReader(f, remaining)
+		}
+
+		_, err := s.client.UploadSessionFinish(finishArg, lastChunk)
+		return err
+	}); err != nil {
+		return fmt.Errorf("failed to finish upload session: %w", err)
+	}
+
+	logger.Log.Info("upload session complete",
+		zap.String("file", filepath.Base(localPath)))
 
 	return nil
 }

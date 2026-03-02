@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"synco/internal/model"
 	"synco/internal/pipeline"
 	"synco/internal/repository"
+	"synco/internal/retry"
 	"synco/internal/syncer"
 	"synco/internal/syncer/dropbox"
 	"synco/internal/syncer/gdrive"
@@ -188,13 +190,16 @@ func (m *JobManager) startDelegatedJob(job model.Job, state *JobState) error {
 
 	myIP, err := getOutboundIP()
 	if err != nil {
+		srv.Stop()
 		return fmt.Errorf("failed to determine local IP: %w", err)
 	}
 	pushTo := fmt.Sprintf("%s:%d", myIP, recvPort)
 
-	if err := m.requestDelegation(job, m.nodeID, pushTo); err != nil {
+	if err := m.requestDelegationWithRetry(job, pushTo, state.StopCh); err != nil {
 		srv.Stop()
-		return fmt.Errorf("delegation failed: %w", err)
+		logger.Log.Warn("delegation not yet established, retrying in background",
+			zap.Uint("job", job.ID),
+			zap.Error(err))
 	}
 
 	logger.Log.Info("receive job started",
@@ -205,6 +210,55 @@ func (m *JobManager) startDelegatedJob(job model.Job, state *JobState) error {
 		zap.String("push_to", pushTo))
 
 	return nil
+}
+
+func (m *JobManager) requestDelegationWithRetry(job model.Job, pushTo string, stopCh <-chan struct{}) error {
+	err := retry.Do(context.Background(), retry.Config{
+		MaxAttempts: 3,
+		BaseDelay:   2 * time.Second,
+		MaxDelay:    30 * time.Second,
+	}, func(attempt int) error {
+		return m.requestDelegation(job, m.nodeID, pushTo)
+	})
+
+	if err == nil {
+		return nil
+	}
+
+	// 재시도 3회 모두 실패시 백그라운드에서 계속 재시도
+	go m.keepRequestDelegation(job, pushTo, stopCh)
+	return err
+}
+
+func (m *JobManager) keepRequestDelegation(job model.Job, pushTo string, stopCh <-chan struct{}) {
+	cfg := retry.Infinite
+	attempt := 0
+
+	for {
+		attempt++
+		err := m.requestDelegation(job, m.nodeID, pushTo)
+		if err == nil {
+			logger.Log.Info("delegation established",
+				zap.Uint("job", job.ID),
+				zap.String("push_to", pushTo),
+				zap.Int("attempt", attempt))
+			return
+		}
+
+		logger.Log.Warn("delegation retry failed",
+			zap.Uint("job", job.ID),
+			zap.Int("attempt", attempt),
+			zap.Error(err))
+
+		delay := retry.Backoff(cfg.BaseDelay, cfg.MaxDelay, attempt)
+		select {
+		case <-stopCh:
+			logger.Log.Info("delegation retry cancelled (job stopped)",
+				zap.Uint("job", job.ID))
+			return
+		case <-time.After(delay):
+		}
+	}
 }
 
 func (m *JobManager) requestDelegation(job model.Job, nodeID, pushTo string) error {
