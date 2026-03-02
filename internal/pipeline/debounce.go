@@ -23,10 +23,11 @@ func Debounce(inCh <-chan model.FileEvent, delay time.Duration) <-chan model.Fil
 
 			events[path] = event
 
+			capturedPath := path
 			timers[path] = time.AfterFunc(delay, func() {
-				outCh <- events[path]
-				delete(timers, path)
-				delete(events, path)
+				outCh <- events[capturedPath]
+				delete(timers, capturedPath)
+				delete(events, capturedPath)
 			})
 		}
 

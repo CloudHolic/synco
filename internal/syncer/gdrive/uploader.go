@@ -264,7 +264,7 @@ func (s *Uploader) findFolderByPath(relPath string) (string, error) {
 }
 
 func (s *Uploader) findFile(name, parentID string) (string, error) {
-	q := fmt.Sprintf("name='%s' and '%s' in parents and mimeType!='application/vnd.google-apps.folder' and trahsed=false", escapeName(name), parentID)
+	q := fmt.Sprintf("name='%s' and '%s' in parents and mimeType!='application/vnd.google-apps.folder' and trashed=false", escapeName(name), parentID)
 
 	list, err := s.svc.Files.List().Q(q).Fields("files(id)").Do()
 	if err != nil {
