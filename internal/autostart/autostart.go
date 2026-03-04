@@ -2,33 +2,20 @@ package autostart
 
 import "runtime"
 
-type AutoStarter interface {
+type AutoStart interface {
 	Install(execPath string, args []string) error
 	Uninstall() error
-	IsInstalled() (bool, error)
+	IsInstalled() bool
+	Stop() error
 }
 
-func New() AutoStarter {
+func New() AutoStart {
 	switch runtime.GOOS {
 	case "windows":
-		return &WindowsAutoStarter{}
+		return newWindows()
 	case "linux":
-		return &LinuxAutoStarter{}
+		return newLinux()
 	default:
-		return &UnsupportedAutoStarter{}
+		return &unsupportedAutoStart{}
 	}
-}
-
-type UnsupportedAutoStarter struct{}
-
-func (u *UnsupportedAutoStarter) Install(_ string, _ []string) error {
-	return nil
-}
-
-func (u *UnsupportedAutoStarter) Uninstall() error {
-	return nil
-}
-
-func (u *UnsupportedAutoStarter) IsInstalled() (bool, error) {
-	return false, nil
 }
