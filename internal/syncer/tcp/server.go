@@ -68,6 +68,10 @@ func (s *Server) Stop() {
 	}
 }
 
+func (s *Server) Port() int {
+	return s.listener.Addr().(*net.TCPAddr).Port
+}
+
 func (s *Server) accept() {
 	for {
 		conn, err := s.listener.Accept()

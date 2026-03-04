@@ -65,6 +65,7 @@ func (s *Server) registerRoutes() {
 
 	// Delegation은 원격에서 호출하므로 별도 로직 추가 적용
 	jobs.POST("/delegate", s.handleDelegate, s.delegateMiddleware())
+	jobs.POST("/push-once", s.handlePushOnce, s.delegateMiddleware())
 }
 
 func (s *Server) Start() {
@@ -301,4 +302,23 @@ func (s *Server) handleResumeJob(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{"status": "resumed"})
+}
+
+func (s *Server) handlePushOnce(c echo.Context) error {
+	var req struct {
+		Src    string `json:"src"`
+		PushTo string `json:"push_to"`
+		NodeID string `json:"node_id"`
+	}
+
+	if err := c.Bind(&req); err != nil || req.Src == "" || req.PushTo == "" {
+		return echo.NewHTTPError(http.StatusBadRequest, "src and push_to required")
+	}
+
+	results, err := s.manager.PushOnce(req.Src, req.PushTo, req.NodeID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+
+	return c.JSON(http.StatusOK, map[string]any{"results": results})
 }

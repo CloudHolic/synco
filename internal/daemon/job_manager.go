@@ -121,6 +121,15 @@ func (m *JobManager) StartJob(job model.Job) error {
 	return nil
 }
 
+func (m *JobManager) PushOnce(src, pushTo, nodeID string) ([]model.SyncResult, error) {
+	s, err := tcp.NewSyncer(src, pushTo, nodeID, tcp.NewVclock())
+	if err != nil {
+		return nil, fmt.Errorf("failed to created syncer: %w", err)
+	}
+
+	return s.FullSync()
+}
+
 func (m *JobManager) newSource(job model.Job) (syncer.EventSource, error) {
 	switch job.SrcType {
 	case model.EndpointLocal:
@@ -189,7 +198,7 @@ func (m *JobManager) startDelegatedJob(job model.Job, state *JobState) error {
 
 	state.RecvServer = srv
 
-	myIP, err := getOutboundIP()
+	myIP, err := tcp.GetOutboundIP()
 	if err != nil {
 		srv.Stop()
 		return fmt.Errorf("failed to determine local IP: %w", err)
@@ -441,17 +450,4 @@ func findAvailablePort() (int, error) {
 	_ = ln.Close()
 
 	return port, nil
-}
-
-func getOutboundIP() (string, error) {
-	conn, err := net.Dial("udp", "8.8.8.8:80")
-	if err != nil {
-		return "", err
-	}
-
-	defer func(conn net.Conn) {
-		_ = conn.Close()
-	}(conn)
-
-	return conn.LocalAddr().(*net.UDPAddr).IP.String(), nil
 }
