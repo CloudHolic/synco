@@ -1,18 +1,18 @@
-package auth
+package util
 
 import (
 	"os"
 	"path/filepath"
 )
 
-func syncoDir() (string, error) {
+func SyncoDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
 
 	dir := filepath.Join(home, ".synco")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}
 

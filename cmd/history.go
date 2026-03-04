@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"synco/internal/model"
 
 	"github.com/spf13/cobra"
@@ -19,12 +18,12 @@ var historyCmd = &cobra.Command{
 	Use:   "history",
 	Short: "View synco history",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		url := fmt.Sprintf("%s?n=%d", daemonURL("/history"), historyN)
+		url := fmt.Sprintf("%s?n=%d", "/history", historyN)
 		if historyJobID > 0 {
 			url += fmt.Sprintf("&job_id=%d", historyJobID)
 		}
 
-		resp, err := http.Get(url)
+		resp, err := apiGet(url)
 		if err != nil {
 			return fmt.Errorf("daemon not running: %w", err)
 		}

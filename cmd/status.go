@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -14,7 +13,7 @@ var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "View daemon status",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		resp, err := http.Get(daemonURL("/status"))
+		resp, err := apiGet("/status")
 		if err != nil {
 			return fmt.Errorf("daemon not running: %w", err)
 		}

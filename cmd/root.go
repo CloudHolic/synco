@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"fmt"
 	"os"
 	"synco/internal/config"
 	"synco/internal/db"
@@ -49,6 +48,10 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
+		if err := initAPIClient(); err != nil {
+			return err
+		}
+
 		return nil
 	},
 }
@@ -57,10 +60,6 @@ func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
-}
-
-func daemonURL(path string) string {
-	return fmt.Sprintf("http://localhost:%d%s", cfg.DaemonPort, path)
 }
 
 func init() {

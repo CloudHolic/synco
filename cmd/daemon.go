@@ -31,6 +31,11 @@ var daemonStartCmd = &cobra.Command{
 func runDaemonInProcess(extraSrc, extraDst string) error {
 	defer logger.Sync()
 
+	creds, err := daemon.LoadOrCreateCredentials()
+	if err != nil {
+		return fmt.Errorf("failed to initialize security: %w", err)
+	}
+
 	jobRepo := repository.NewJobRepository()
 	jobs, err := jobRepo.GetAll()
 	if err != nil {
@@ -65,7 +70,7 @@ func runDaemonInProcess(extraSrc, extraDst string) error {
 		fmt.Printf("watching %s → %s  (Ctrl+C to stop)\n", extraSrc, extraDst)
 	}
 
-	srv := daemon.NewServer(manager, cfg.DaemonPort)
+	srv := daemon.NewServer(manager, cfg.DaemonPort, creds)
 	srv.Start()
 
 	logger.Log.Info("synco daemon started",

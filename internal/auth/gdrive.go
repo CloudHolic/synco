@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"synco/internal/util"
 
+	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/files"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/drive/v3"
@@ -82,7 +84,7 @@ func (g *gdriveProvider) NewService(ctx context.Context) (*drive.Service, error)
 }
 
 func (g *gdriveProvider) loadConfig() (*oauth2.Config, error) {
-	dir, err := syncoDir()
+	dir, err := util.SyncoDir()
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +103,7 @@ func (g *gdriveProvider) loadConfig() (*oauth2.Config, error) {
 }
 
 func (g *gdriveProvider) saveToken(token *oauth2.Token) error {
-	dir, err := syncoDir()
+	dir, err := util.SyncoDir()
 	if err != nil {
 		return err
 	}
@@ -121,7 +123,7 @@ func (g *gdriveProvider) saveToken(token *oauth2.Token) error {
 }
 
 func (g *gdriveProvider) loadToken() (*oauth2.Token, error) {
-	dir, err := syncoDir()
+	dir, err := util.SyncoDir()
 	if err != nil {
 		return nil, err
 	}

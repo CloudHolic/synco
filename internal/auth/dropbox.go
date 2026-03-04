@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"synco/internal/util"
 	"time"
 
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox"
@@ -90,7 +91,7 @@ func (d *dropboxProvider) NewClient() (files.Client, error) {
 }
 
 func (d *dropboxProvider) loadConfig() (*oauth2.Config, error) {
-	dir, err := syncoDir()
+	dir, err := util.SyncoDir()
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +116,7 @@ func (d *dropboxProvider) loadConfig() (*oauth2.Config, error) {
 }
 
 func (d *dropboxProvider) saveToken(token *oauth2.Token) error {
-	dir, err := syncoDir()
+	dir, err := util.SyncoDir()
 	if err != nil {
 		return err
 	}
@@ -135,7 +136,7 @@ func (d *dropboxProvider) saveToken(token *oauth2.Token) error {
 }
 
 func (d *dropboxProvider) loadToken() (*oauth2.Token, error) {
-	dir, err := syncoDir()
+	dir, err := util.SyncoDir()
 	if err != nil {
 		return nil, err
 	}

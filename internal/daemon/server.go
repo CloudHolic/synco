@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"strconv"
@@ -22,11 +24,12 @@ type Server struct {
 	jobRepo   *repository.JobRepository
 	histRepo  *repository.HistoryRepository
 	port      int
+	creds     *Credentials
 	stopCh    chan struct{}
 	startedAt time.Time
 }
 
-func NewServer(manager *JobManager, port int) *Server {
+func NewServer(manager *JobManager, port int, creds *Credentials) *Server {
 	e := echo.New()
 	e.HideBanner = true
 	e.Use(middleware.Recover())
@@ -37,6 +40,7 @@ func NewServer(manager *JobManager, port int) *Server {
 		jobRepo:   repository.NewJobRepository(),
 		histRepo:  repository.NewHistoryRepository(),
 		port:      port,
+		creds:     creds,
 		stopCh:    make(chan struct{}, 1),
 		startedAt: time.Now(),
 	}
@@ -45,31 +49,40 @@ func NewServer(manager *JobManager, port int) *Server {
 }
 
 func (s *Server) registerRoutes() {
+	authed := s.echo.Group("", s.authMiddleware())
 	// For the entire daemon
-	s.echo.GET("/status", s.handleStatus)
-	s.echo.POST("/stop", s.handleStop)
+	authed.GET("/status", s.handleStatus)
+	authed.POST("/stop", s.handleStop)
+	authed.GET("/history", s.handleHistory)
 
 	// For a specific job
-	g := s.echo.Group("/jobs")
-	g.GET("", s.handleListJobs)
-	g.POST("", s.handleAddJob)
-	g.POST("/delegate", s.handleDelegate)
-	g.DELETE("/:id", s.handleRemoveJob)
-	g.POST("/:id/pause", s.handlePauseJob)
-	g.POST("/:id/resume", s.handleResumeJob)
+	jobs := authed.Group("/jobs")
+	jobs.GET("", s.handleListJobs)
+	jobs.POST("", s.handleAddJob)
+	jobs.DELETE("/:id", s.handleRemoveJob)
+	jobs.POST("/:id/pause", s.handlePauseJob)
+	jobs.POST("/:id/resume", s.handleResumeJob)
 
-	// History
-	s.echo.GET("/history", s.handleHistory)
+	// Delegation은 원격에서 호출하므로 별도 로직 추가 적용
+	jobs.POST("/delegate", s.handleDelegate, s.delegateMiddleware())
 }
 
 func (s *Server) Start() {
 	go func() {
-		addr := ":" + strconv.Itoa(s.port)
+		addr := fmt.Sprintf("127.0.0.1:%d", s.port)
 		logger.Log.Info("daemon server started",
 			zap.String("addr", addr))
 
-		if err := s.echo.Start(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Log.Error("daemon server error", zap.Error(err))
+		srv := &http.Server{
+			Addr:      addr,
+			Handler:   s.echo,
+			TLSConfig: s.creds.TLSConfig,
+		}
+
+		if err := srv.ListenAndServeTLS("", ""); err != nil &&
+			!errors.Is(err, http.ErrServerClosed) {
+			logger.Log.Error("daemon server error",
+				zap.Error(err))
 		}
 	}()
 }
@@ -81,6 +94,50 @@ func (s *Server) Stop(ctx context.Context) error {
 
 func (s *Server) StopCh() <-chan struct{} {
 	return s.stopCh
+}
+
+func (s *Server) authMiddleware() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			auth := c.Request().Header.Get("Authorization")
+			if len(auth) < 8 || auth[:7] != "Bearer " {
+				return echo.NewHTTPError(http.StatusUnauthorized, "missing token")
+			}
+
+			provided := auth[7:]
+
+			// timing-safe 비교로 timing attack 방지
+			if subtle.ConstantTimeCompare([]byte(provided), []byte(s.creds.Token)) != 1 {
+				return echo.NewHTTPError(http.StatusUnauthorized, "invalid token")
+			}
+
+			return next(c)
+		}
+	}
+}
+
+func (s *Server) delegateMiddleware() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			tsStr := c.Request().Header.Get("X-Synco-Timestamp")
+			if tsStr == "" {
+				return echo.NewHTTPError(http.StatusBadRequest, "missing timestamp")
+			}
+
+			ts, err := strconv.ParseInt(tsStr, 10, 64)
+			if err != nil {
+				return echo.NewHTTPError(http.StatusBadRequest, "invalid timestamp")
+			}
+
+			// 5분 이상 지난 요청은 거부
+			age := time.Since(time.Unix(ts, 0))
+			if age > 5*time.Minute || age < -1*time.Minute {
+				return echo.NewHTTPError(http.StatusUnauthorized, "request expired")
+			}
+
+			return next(c)
+		}
+	}
 }
 
 func (s *Server) handleStatus(c echo.Context) error {
@@ -96,6 +153,29 @@ func (s *Server) handleStatus(c echo.Context) error {
 func (s *Server) handleStop(c echo.Context) error {
 	s.stopCh <- struct{}{}
 	return c.JSON(http.StatusOK, map[string]string{"status": "stopping"})
+}
+
+func (s *Server) handleHistory(c echo.Context) error {
+	n := 20
+	if nStr := c.QueryParam("n"); nStr != "" {
+		if parsed, err := strconv.Atoi(nStr); err == nil {
+			n = parsed
+		}
+	}
+
+	var jobID uint
+	if jStr := c.QueryParam("job_id"); jStr != "" {
+		if parsed, err := strconv.ParseUint(jStr, 10, 64); err == nil {
+			jobID = uint(parsed)
+		}
+	}
+
+	histories, err := s.histRepo.GetRecent(n, jobID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	return c.JSON(http.StatusOK, histories)
 }
 
 func (s *Server) handleListJobs(c echo.Context) error {
@@ -221,27 +301,4 @@ func (s *Server) handleResumeJob(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{"status": "resumed"})
-}
-
-func (s *Server) handleHistory(c echo.Context) error {
-	n := 20
-	if nStr := c.QueryParam("n"); nStr != "" {
-		if parsed, err := strconv.Atoi(nStr); err == nil {
-			n = parsed
-		}
-	}
-
-	var jobID uint
-	if jStr := c.QueryParam("job_id"); jStr != "" {
-		if parsed, err := strconv.ParseUint(jStr, 10, 64); err == nil {
-			jobID = uint(parsed)
-		}
-	}
-
-	histories, err := s.histRepo.GetRecent(n, jobID)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-	}
-
-	return c.JSON(http.StatusOK, histories)
 }

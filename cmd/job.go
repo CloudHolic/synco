@@ -31,7 +31,7 @@ var jobListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all configured jobs",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		resp, err := http.Get(daemonURL("/jobs"))
+		resp, err := apiGet("/jobs")
 		if err != nil {
 			return fmt.Errorf("daemon not running: %w", err)
 		}
@@ -201,8 +201,7 @@ var jobRemoveCmd = &cobra.Command{
 	Short: "Remove a job",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		req, _ := http.NewRequest(http.MethodDelete, daemonURL("/jobs/"+args[0]), nil)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := apiDelete("/jobs/" + args[0])
 		if err != nil {
 			return fmt.Errorf("daemon not running: %w", err)
 		}
@@ -221,7 +220,7 @@ var jobPauseCmd = &cobra.Command{
 	Short: "Pause a job",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		resp, err := http.Post(daemonURL("/jobs/"+args[0]+"/pause"), "application/json", nil)
+		resp, err := apiPost("/jobs/"+args[0]+"/pause", "application/json", nil)
 		if err != nil {
 			return fmt.Errorf("daemon not running: %w", err)
 		}
@@ -240,7 +239,7 @@ var jobResumeCmd = &cobra.Command{
 	Short: "Resume a job",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		resp, err := http.Post(daemonURL("/jobs/"+args[0]+"/resume"), "application/json", nil)
+		resp, err := apiPost("/jobs/"+args[0]+"/resume", "application/json", nil)
 		if err != nil {
 			return fmt.Errorf("daemon not running: %w", err)
 		}
@@ -257,7 +256,7 @@ var jobResumeCmd = &cobra.Command{
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func isDaemonRunning() bool {
-	resp, err := http.Get(daemonURL("/status"))
+	resp, err := apiGet("/status")
 	if err != nil {
 		return false
 	}
@@ -271,7 +270,7 @@ func postJob(src, dst string) error {
 
 	body := fmt.Sprintf(`{"src":"%s","src_type":"%s","dst":"%s","dst_type":"%s"}`,
 		src, srcType, dst, dstType)
-	resp, err := http.Post(daemonURL("/jobs"), "application/json", strings.NewReader(body))
+	resp, err := apiPost("/jobs", "application/json", strings.NewReader(body))
 
 	if err != nil {
 		return fmt.Errorf("failed to reach daemon: %w", err)

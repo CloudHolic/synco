@@ -1,7 +1,6 @@
 package tcp
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -38,8 +37,4 @@ func ParseEndpoint(raw string) Endpoint {
 
 func (e Endpoint) IsRemote() bool {
 	return e.Host != ""
-}
-
-func (e Endpoint) DaemonURL(apiPath string) string {
-	return fmt.Sprintf("http://%s%s", e.Host, apiPath)
 }
