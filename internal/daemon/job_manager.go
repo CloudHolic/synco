@@ -205,7 +205,6 @@ func (m *JobManager) startDelegatedJob(job model.Job, state *JobState) error {
 	pushTo := fmt.Sprintf("%s:%d", myIP, recvPort)
 
 	if err := m.requestDelegationWithRetry(job, pushTo, state.StopCh); err != nil {
-		srv.Stop()
 		logger.Log.Warn("delegation not yet established, retrying in background",
 			zap.Uint("job", job.ID),
 			zap.Error(err))

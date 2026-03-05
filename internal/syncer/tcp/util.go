@@ -30,7 +30,7 @@ func PostRemoteDaemon(host, path, nodeID, body string) (*http.Response, error) {
 		},
 	}
 
-	url := fmt.Sprintf("https://%s/%s", host, path)
+	url := fmt.Sprintf("https://%s%s", host, path)
 	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
 	if err != nil {
 		return nil, err
