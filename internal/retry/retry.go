@@ -32,7 +32,7 @@ func Do(ctx context.Context, cfg Config, fn func(attempt int) error) error {
 
 	var err error
 	for attempt := 1; ; attempt++ {
-		if err = fn(attempt); err != nil {
+		if err = fn(attempt); err == nil {
 			return nil
 		}
 

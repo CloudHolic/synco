@@ -38,7 +38,7 @@ func (w *Watcher) Watch(dir string) error {
 	}
 
 	if _, err := os.Stat(absDir); err != nil {
-		return fmt.Errorf("soiurce directory not found: %w", err)
+		return fmt.Errorf("source directory not found: %w", err)
 	}
 
 	if err := w.addRecursive(absDir); err != nil {

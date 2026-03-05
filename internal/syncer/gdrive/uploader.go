@@ -20,7 +20,7 @@ import (
 	"google.golang.org/api/googleapi"
 )
 
-const chunkSize = 8 * 1024 * 1024 // 5MB
+const chunkSize = 8 * 1024 * 1024 // 8MB
 
 type Uploader struct {
 	mu         sync.RWMutex

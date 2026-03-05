@@ -211,7 +211,7 @@ func (p *Source) handleEntry(entry files.IsMetadata) {
 
 	switch e := entry.(type) {
 	case *files.FileMetadata:
-		relPath := toRelPath(e.PathDisplay)
+		relPath := toRelPath(p.folderPath, e.PathDisplay)
 		if relPath == "" {
 			return
 		}
@@ -223,7 +223,7 @@ func (p *Source) handleEntry(entry files.IsMetadata) {
 		}
 
 	case *files.DeletedMetadata:
-		relPath := toRelPath(e.PathDisplay)
+		relPath := toRelPath(p.folderPath, e.PathDisplay)
 		if relPath == "" {
 			return
 		}

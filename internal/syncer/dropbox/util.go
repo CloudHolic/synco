@@ -8,15 +8,15 @@ import (
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/files"
 )
 
-func toRelPath(dropboxPath string) string {
-	prefix := strings.ToLower(p.folderPath)
+func toRelPath(folderPath, dropboxPath string) string {
+	prefix := strings.ToLower(folderPath)
 	lower := strings.ToLower(dropboxPath)
 
 	if !strings.HasPrefix(lower, prefix) {
 		return ""
 	}
 
-	rel := dropboxPath[len(p.folderPath):]
+	rel := dropboxPath[len(folderPath):]
 	return strings.TrimPrefix(rel, "/")
 }
 
