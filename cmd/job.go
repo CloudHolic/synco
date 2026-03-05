@@ -173,6 +173,10 @@ func buildFullSyncer(src, dst string) (syncer.Syncer, error) {
 	case srcType == model.EndpointLocal && dstType == model.EndpointRemoteTCP:
 		return tcp.NewSyncer(src, dst, nodeID, tcp.NewVclock())
 
+	case srcType == model.EndpointRemoteTCP && dstType == model.EndpointLocal:
+		ep := tcp.ParseEndpoint(src)
+		return tcp.NewPullSyncer(ep.Path, ep.Host, dst, nodeID, cfg.ConflictStrategy)
+
 	case srcType == model.EndpointLocal && dstType == model.EndpointGDrive:
 		path := strings.TrimPrefix(dst, "gdrive:")
 		return gdrive.NewUploader(src, path)

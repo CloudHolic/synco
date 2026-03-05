@@ -3,8 +3,11 @@ package tcp
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,10 +21,13 @@ import (
 )
 
 type Syncer struct {
-	src    string
-	addr   string
-	nodeID string
-	vc     *Vclock
+	src      string
+	addr     string
+	dst      string
+	nodeID   string
+	vc       *Vclock
+	strategy model.ConflictStrategy
+	pull     bool
 }
 
 func NewSyncer(src, addr, nodeID string, vc *Vclock) (*Syncer, error) {
@@ -38,11 +44,55 @@ func NewSyncer(src, addr, nodeID string, vc *Vclock) (*Syncer, error) {
 	}, nil
 }
 
+func NewPullSyncer(src, addr, dst, nodeID string, strategy model.ConflictStrategy) (*Syncer, error) {
+	absDst, err := filepath.Abs(dst)
+	if err != nil {
+		return nil, fmt.Errorf("invalid dst path: %w", err)
+	}
+
+	return &Syncer{
+		src:      src,
+		addr:     addr,
+		dst:      absDst,
+		nodeID:   nodeID,
+		vc:       NewVclock(),
+		pull:     true,
+		strategy: strategy,
+	}, nil
+}
+
 func (s *Syncer) Run(inCh <-chan model.FileEvent) <-chan model.SyncResult {
+	if s.pull {
+		out := make(chan model.SyncResult)
+		close(out)
+		return out
+	}
+
 	return syncer.RunLoop(inCh, s.handle)
 }
 
 func (s *Syncer) FullSync() ([]model.SyncResult, error) {
+	if s.pull {
+		srv, err := NewServer(s.dst, ":0", s.nodeID, s.strategy)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := srv.Start(); err != nil {
+			return nil, err
+		}
+		defer srv.Stop()
+
+		ip, err := GetOutboundIP()
+		if err != nil {
+			return nil, err
+		}
+
+		pushTo := fmt.Sprintf("%s:%d", ip, srv.Port())
+
+		return requestPushOnce(s.addr, s.src, pushTo, s.nodeID)
+	}
+
 	var results []model.SyncResult
 
 	err := filepath.WalkDir(s.src, func(path string, d os.DirEntry, err error) error {
@@ -201,4 +251,32 @@ func (s *Syncer) sendDelete(conn net.Conn, reader *bufio.Reader, path string) er
 	}
 
 	return nil
+}
+
+func requestPushOnce(addr, src, pushTo, nodeID string) ([]model.SyncResult, error) {
+	body := fmt.Sprintf(`{"src":"%s","push_to":"%s","node_id":"%s"}`, src, pushTo, nodeID)
+	resp, err := PostRemoteDaemon(addr, "/jobs/push-once", nodeID, body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reach remote daemon at %s: %w", addr, err)
+	}
+
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		var errResp map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&errResp)
+		return nil, fmt.Errorf("remote rejected: %s", errResp["error"])
+	}
+
+	var response struct {
+		Results []model.SyncResult `json:"results"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return response.Results, nil
 }

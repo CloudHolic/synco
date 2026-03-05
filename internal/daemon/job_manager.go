@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"synco/internal/config"
@@ -278,17 +277,7 @@ func (m *JobManager) requestDelegation(job model.Job, nodeID, pushTo string) err
 	}
 
 	body := fmt.Sprintf(`{"src":"%s","push_to":"%s","node_id":"%s"}`, ep.Path, pushTo, nodeID)
-	url := fmt.Sprintf("https://%s/jobs/delegate", ep.Host)
-	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Synco-Timestamp", strconv.FormatInt(time.Now().Unix(), 10))
-	req.Header.Set("X-Synco-Node-ID", nodeID)
-
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := tcp.PostRemoteDaemon(ep.Host, "/jobs/delegate", nodeID, body)
 	if err != nil {
 		return fmt.Errorf("failed to reach remote daemon at %s: %w", ep.Host, err)
 	}
